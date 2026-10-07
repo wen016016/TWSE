@@ -1,0 +1,33 @@
+{
+  "_說明": "這家券商網頁下單頁面的 CSS selector。全部空白 = 尚未校正，系統會拒絕下單 / 同步帳務。登入後在「券商帳戶」按「擷取目前頁面」，再請 Claude 讀擷取檔幫你填。",
+  "order_page_match": "",
+  "code": "",
+  "buy": "",
+  "sell": "",
+  "qty": "",
+  "price": "",
+  "odd_lot": "",
+  "trade_type": "",
+  "trade_type_options": {
+    "現股": "",
+    "現股當沖": ""
+  },
+  "submit": "",
+  "confirm": "",
+  "account": {
+    "holdings_url": "",
+    "holdings_table": "",
+    "holdings_cols": {
+      "code": 0,
+      "name": 1,
+      "qty": 2,
+      "avg_cost": 3,
+      "price": 4,
+      "market_value": 5,
+      "pnl": 6
+    },
+    "qty_unit": "股",
+    "cash_url": "",
+    "cash_selector": ""
+  }
+}
