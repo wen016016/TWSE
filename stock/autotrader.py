@@ -232,6 +232,11 @@ class AutoTrader(threading.Thread):
     def _send(self, req, key, cool) -> bool:
         self.cooldown[key] = time.time() + cool
         t = broker.preview(req)
+        if t.get("submit_mode") != "auto":  # 自動交易只用「系統自動確定」的帳戶，不然會卡著等人按確定
+            broker.cancel(t["id"])
+            self.log("略過", f"{t['code']} {t['name']}：{t['account_name']} 是「{t.get('submit_mode')}」送單模式，自動交易需改成「系統自動確定」", reason=req.get("reason"))
+            self.cooldown[key] = time.time() + 600
+            return False
         label = f"{t['code']} {t['name']} {t['mode_name']}{'新倉' if t['action'] == 'open' else '平倉'}{'買進' if t['side'] == 'buy' else '賣出'} {t['shares']:,} 股 @ {t['price']}"
         if t["errors"]:
             broker.cancel(t["id"])
@@ -245,7 +250,7 @@ class AutoTrader(threading.Thread):
         status = r["result"]["status"]
         ok = status in ("模擬成交", "已送出")
         self.log("委託" if ok else "未送出", f"{label}：{status}", reason=req.get("reason"), pnl=r.get("pnl"))
-        if not ok:  # dry_run 只填單 → 5 分鐘內不再重試
+        if not ok:  # 測試模式 / 未送出 → 5 分鐘內不再重試
             self.cooldown[key] = time.time() + 300
         return ok
 

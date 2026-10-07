@@ -177,9 +177,71 @@ def quotes(codes: list[str], max_age=3.0) -> dict:
         try:
             _fetch(stale)
         except RuntimeError:
-            if not all(k in _cache for k in keys):  # 沒有舊資料可用才報錯
+            # 證交所連不上 → 沒有快取的改用 Yahoo (延遲數分鐘)，最多 30 檔避免太慢
+            missing = [k for k in keys if k not in _cache][:30]
+            for k in missing:
+                q = _yahoo_quote(k)
+                if q:
+                    _cache[k] = (time.time() - max_age + 30, q)  # 30 秒後再試證交所
+            if not any(k in _cache for k in keys):
                 raise
     return {k: _cache[k][1] for k in keys if k in _cache}
+
+
+WWW = Limiter("證交所網站", 3.0)
+
+
+def _twse_index_quote():
+    """加權指數備援：證交所網站「每 5 秒指數」(和即時行情不同主機)，09:00 那筆 = 昨收"""
+    WWW.wait()
+    try:
+        r = _session.get("https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_INDEX",
+                         params={"date": _now().strftime("%Y%m%d"), "response": "json"}, timeout=10)
+        rows = r.json().get("data") or []
+        WWW.ok()
+    except Exception:  # noqa: BLE001
+        WWW.fail()
+        return None
+    if not rows:
+        return None
+    vals = [float(x[1].replace(",", "")) for x in rows]
+    price, prev = vals[-1], vals[0]
+    return {"code": "^TWII", "name": "加權指數", "price": price, "prev_close": prev, "last_vol": 0, "volume": 0,
+            "bid": [], "ask": [], "bid_vol": [], "ask_vol": [], "open": vals[1] if len(vals) > 1 else price,
+            "high": max(vals[1:] or vals), "low": min(vals[1:] or vals), "limit_up": None, "limit_down": None,
+            "chg": round(price - prev, 2), "chg_pct": round((price / prev - 1) * 100, 2),
+            "time": rows[-1][0] + " (證交所網站)", "date": _now().strftime("%Y%m%d"), "source": "twse_www"}
+
+
+def _yahoo_quote(key):
+    """備援：證交所即時行情被擋時，加權用證交所網站，其他用 Yahoo 1分K 最後一根 (會延遲)"""
+    if key == "^TWII":
+        q = _twse_index_quote()
+        if q:
+            return q
+    try:
+        m1 = data.get_kline(key, "1m", live=False)
+        d1 = data.get_kline(key, "1d", live=False)
+    except Exception:  # noqa: BLE001
+        return None
+    last = m1.iloc[-1]
+    today = m1.index[-1].date()
+    day = m1[m1.index.date == today]
+    prev = d1[d1.index.date < today]["close"]
+    prev_close = float(prev.iloc[-1]) if len(prev) else None
+    price = float(last["close"])
+    name = INDEX_EX[key][2] if key in INDEX_EX else data.resolve(key)["name"]
+    q = {"code": key, "name": name, "price": price, "last_vol": 0, "volume": float(day["volume"].sum()),
+         "bid": [], "ask": [], "bid_vol": [], "ask_vol": [], "open": float(day["open"].iloc[0]),
+         "high": float(day["high"].max()), "low": float(day["low"].min()), "prev_close": prev_close,
+         "limit_up": round(prev_close * 1.1, 2) if prev_close and key not in INDEX_EX else None,
+         "limit_down": round(prev_close * 0.9, 2) if prev_close and key not in INDEX_EX else None,
+         "time": m1.index[-1].strftime("%H:%M:%S") + " (Yahoo延遲)", "date": today.strftime("%Y%m%d"),
+         "source": "yahoo"}
+    if key in INDEX_EX:
+        q["chg"] = round(price - prev_close, 2) if prev_close else None
+        q["chg_pct"] = round((price / prev_close - 1) * 100, 2) if prev_close else None
+    return q
 
 
 def quote(code: str, max_age=3.0) -> dict:

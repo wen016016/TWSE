@@ -159,7 +159,7 @@ tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
   <div class="card">
     <h3 style="margin-top:0">預設下單帳戶</h3>
     <div class="row">當沖 <select id="da-d"></select> 波段 <select id="da-s"></select> <button class="b" id="da-save">儲存</button> <span id="da-msg" class="mut"></span></div>
-    <p class="mut" style="font-size:13px">額度上限 = 你設定的額度 與 該帳戶實際可用餘額 取小的。下單視窗也可以臨時改選帳戶。</p>
+    <p class="mut" style="font-size:13px">送單模式：「你在券商按確定」= 系統填好單、停在券商確認視窗，由你按確定 (預設)；「系統自動確定」= 系統直接送出 (自動交易需要)；「測試」= 填好後自動取消。下單視窗也可以臨時改選帳戶。</p>
   </div>
   <div class="card">
     <h3 style="margin-top:0">我的券商帳戶</h3>
@@ -208,7 +208,7 @@ tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
     <div class="card">
       <h3 style="margin-top:0">狀態</h3>
       <div id="au-status"></div>
-      <div class="note">自動交易在本機執行：電腦和本系統 (start.bat 視窗) 必須保持開著。券商帳戶若設為「只填單不送出」，自動單只會填單不會成交。</div>
+      <div class="note">自動交易在本機執行：電腦和本系統 (start.bat 視窗) 必須保持開著。自動交易只會用「系統自動確定」模式的券商帳戶；「你在券商按確定」模式的帳戶會被自動交易略過。</div>
     </div>
   </div>
   <div class="card"><h3 style="margin-top:0">自動交易紀錄</h3><div id="au-log"></div></div>
@@ -275,7 +275,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x===b));
   document.querySelectorAll('main>section').forEach(s=>s.classList.toggle('hide',s.id!=='t-'+b.dataset.t));
   try{localStorage.setItem('tab',b.dataset.t)}catch(e){}
-  if(b.dataset.t==='ord')loadLedger(); if(b.dataset.t==='acc')loadAccounts(); if(b.dataset.t==='set')loadSettings(); if(b.dataset.t==='auto')loadAuto();
+  if(b.dataset.t==='ord'){loadLedger();syncOpenAccounts()} if(b.dataset.t==='acc')loadAccounts(); if(b.dataset.t==='set')loadSettings(); if(b.dataset.t==='auto')loadAuto();
   if(b.dataset.t==='sec'&&!$('#sec-out').innerHTML)$('#sec-go').click();
 });
 const NAMES={'1wk':'週K','1d':'日K','5m':'5分K 當沖','1m':'1分K 當沖','short':'短線波段','long':'中長線波段','daytrade':'當沖'};
@@ -317,10 +317,10 @@ async function loadTicker(){
     const st=t.budget;
     $('#bud').innerHTML=`額度 ✎ 當沖 <b>${fmt(st.daytrade.available,0)}</b>/${fmt(st.daytrade.budget,0)} · 波段 <b>${fmt(st.swing.available,0)}</b>/${fmt(st.swing.budget,0)}`;
     const web=t.accounts.filter(a=>a.type==='web');
-    $('#acc').innerHTML=web.length?web.map(a=>{const s=a.summary;return `${esc(a.name)} ${a.browser_open?'<span class="up">●</span>':'<span class="mut">○</span>'}${s?` 可用 <b>${s.cash!=null?fmt(s.cash,0):'-'}</b>`:''}`}).join(' · '):'券商帳戶 <span class="mut">未設定</span>';
+    $('#acc').innerHTML=web.length?web.map(a=>{const s=a.summary;return `${esc(a.name)} ${a.browser_open?'<span class="up">●</span>':'<span class="mut">○</span>'}${s&&s.market_value!=null?` 市值 <b>${fmt(s.market_value,0)}</b> · 未實現 <b class="${cls(s.unrealized)}">${s.unrealized>0?'+':''}${fmt(s.unrealized,0)}</b>`:''}`}).join(' · '):'券商帳戶 <span class="mut">未設定</span>';
     const nm=id=>(t.accounts.find(a=>a.id===id)||{}).name||id;
     const dd=t.default_account;
-    const dryOf=id=>{const a=t.accounts.find(x=>x.id===id);return a&&a.type==='web'?(a.dry_run?'(只填單)':'<b class=up>(實單)</b>'):''};
+    const dryOf=id=>{const a=t.accounts.find(x=>x.id===id);return a&&a.type==='web'?({manual:'(你按確定)',auto:'<b class=up>(自動確定)</b>',test:'(測試)'}[a.submit_mode]||''):''};
     $('#brk').innerHTML=`下單 當沖→${esc(nm(dd.daytrade))}${dryOf(dd.daytrade)} · 波段→${esc(nm(dd.swing))}${dryOf(dd.swing)}`;
     $('#aut').innerHTML=t.auto.enabled?`自動交易 <b class="up">開</b> · 出場${t.auto.exit?'✔':'✖'} 進場${t.auto.entry?'✔':'✖'}`:'自動交易 <b class="mut">關</b>';
   }catch(e){$('#tk-time').textContent='狀態讀取失敗：'+e.message}
@@ -493,10 +493,11 @@ window.mkOrder=async req=>{
   try{if(!ACCS.length)ACCS=(await api('/api/accounts')).accounts;const t=await api('/api/order/preview',req);showTicket(t)}catch(e){alert(e.message)}
 };
 window.reTicket=(oldId,acc)=>{api('/api/order/cancel',{id:oldId});mkOrder({...LAST_REQ,account:acc})};
+let LAST_TICKET=null;
 function showTicket(t){
-  const ok=!t.errors.length;
+  LAST_TICKET=t;const ok=!t.errors.length;
   $('#modal-c').innerHTML=`<h3 style="margin-top:0">確認委託單</h3>
-   <table><tr><td>下單帳戶</td><td><select onchange="reTicket('${t.id}',this.value)">${ACCS.map(a=>`<option value="${a.id}" ${a.id===t.account?'selected':''}>${esc(a.name)}${a.type==='web'?(a.dry_run?' (只填單)':' (實單)'):''}</option>`).join('')}</select></td></tr>
+   <table><tr><td>下單帳戶</td><td><select onchange="reTicket('${t.id}',this.value)">${ACCS.map(a=>`<option value="${a.id}" ${a.id===t.account?'selected':''}>${esc(a.name)}${a.type==='web'?' ('+({manual:'你按確定',auto:'自動確定',test:'測試'}[a.submit_mode]||'')+')':''}</option>`).join('')}</select></td></tr>
    <tr><td>股票</td><td><b>${t.code} ${esc(t.name)}</b></td></tr>
    <tr><td>類別</td><td>${t.mode_name} · ${t.action==='open'?'新倉':'平倉'} · ${t.trade_type}</td></tr>
    <tr><td>買賣</td><td><b class="${t.side==='buy'?'up':'dn'}">${t.side==='buy'?'買進':'賣出'}</b></td></tr>
@@ -514,8 +515,11 @@ function showTicket(t){
 }
 window.closeTicket=id=>{api('/api/order/cancel',{id});$('#modal').classList.add('hide')};
 window.confirmTicket=id=>busy($('#cf-btn'),$('#cf-msg'),async()=>{
+  const acc=ACCS.find(a=>a.id===(LAST_TICKET&&LAST_TICKET.account));
+  if(acc&&acc.submit_mode==='manual')$('#cf-msg').innerHTML=`<div class="note">⏳ 已在 ${esc(acc.name)} 頁面填好單，請到 ${esc(acc.name)} 的 Edge 視窗看確認內容，按「確定 (Y)」送出 (120 秒內)…</div>`;
   const t=await api('/api/order/confirm',{id});
-  $('#cf-msg').innerHTML=`<div class="note">✔ ${esc(t.result.status)}${t.result.screenshot?'<br>截圖：'+esc(t.result.screenshot):''}</div>`;
+  const okk=t.result.status==='已送出'||t.result.status==='模擬成交';
+  $('#cf-msg').innerHTML=`<div class="${okk?'note':'err'}">${okk?'✔':'✖'} ${esc(t.result.status)}${t.result.note?'<br>'+esc(t.result.note):''}${t.result.broker_error?'<br>券商訊息：'+esc(t.result.broker_error):''}${t.result.screenshot?'<br><span class="mut" style="font-size:12px">截圖：'+esc(t.result.screenshot)+'</span>':''}</div>`;
   $('#cf-btn').remove();loadHeader();loadLedger();
 });
 $('#o-go').onclick=()=>mkOrder({code:$('#o-code').value,mode:$('#o-mode').value,action:$('#o-act').value,side:$('#o-side').value,
@@ -539,12 +543,31 @@ async function loadLedger(){
   setHTML('#o-pos',posRows());
   const web=r.accounts.filter(a=>a.type==='web');
   $('#ac-out').innerHTML=web.length?web.map(a=>{const ac=r.holdings[a.id];
-    return `<h4 style="margin:10px 0 4px">${esc(a.name)} ${ac?`<span class="mut" style="font-size:13px">同步 ${ac.synced.replace('T',' ').slice(5,16)} · 可用餘額 <b>${ac.cash!=null?fmt(ac.cash,0):'-'}</b> 元</span>`:'<span class="mut" style="font-size:13px">尚未同步</span>'}</h4>`+
-    (ac&&ac.holdings.length?`<table><tr><th>股票</th><th class="n">股數</th><th class="n">成本</th><th class="n">現價</th><th class="n">市值</th><th class="n">損益</th><th></th></tr>${ac.holdings.map(h=>`<tr><td>${h.code} ${esc(h.name)}</td><td class="n">${fmt(h.qty,0)}</td><td class="n">${h.avg_cost??'-'}</td><td class="n">${h.price??'-'}</td><td class="n">${h.market_value!=null?fmt(h.market_value,0):'-'}</td><td class="n ${cls(h.pnl)}">${h.pnl!=null?fmt(h.pnl,0):'-'}</td><td><button class="b sec" onclick="showCode('${h.code}','swing')">分析</button></td></tr>`).join('')}</table>`:ac?'<p class="mut">庫存為空</p>':'')}).join(''):'<p class="mut">尚未新增券商帳戶，請到「券商帳戶」頁新增</p>';
+    const cost=ac?ac.holdings.reduce((x,h)=>x+(h.market_value||0)-(h.pnl||0),0):0;
+    return `<h4 style="margin:10px 0 4px">${esc(a.name)} <span class="mut" style="font-size:13px">${ac?`同步 ${ac.synced.replace('T',' ').slice(5,19)}${ac.broker_update?' (券商資料 '+ac.broker_update.slice(11)+')':''}`:'尚未同步'}</span></h4>`+
+    (ac?`<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:6px 0 10px">
+      <div class="card" style="margin:0;padding:10px 14px"><div class="mut">庫存總市值</div><div class="big">${fmt(ac.market_value,0)}</div></div>
+      <div class="card" style="margin:0;padding:10px 14px"><div class="mut">未實現損益</div><div class="big ${cls(ac.unrealized)}">${ac.unrealized>0?'+':''}${fmt(ac.unrealized,0)}</div><div class="mut" style="font-size:12px">${cost?`報酬率 ${pc(ac.unrealized/cost*100)}%`:''}</div></div>
+      <div class="card" style="margin:0;padding:10px 14px"><div class="mut">持有檔數</div><div class="big">${ac.holdings.length}</div></div>
+      <div class="card" style="margin:0;padding:10px 14px"><div class="mut">${esc(ac.cash_name||'帳戶')}餘額</div><div class="big">${ac.cash!=null?fmt(ac.cash,0):'-'}</div></div>
+     </div>`:'')+
+    (ac&&ac.holdings.length?`<table><tr><th>股票</th><th class="n">股數</th><th class="n">損益平衡價</th><th class="n">現價</th><th class="n">市值</th><th class="n">損益</th><th class="n">獲利率</th><th></th></tr>${ac.holdings.map(h=>`<tr><td>${h.code} ${esc(h.name)}${h.type&&h.type!=='現股'?` <span class="tag">${esc(h.type)}</span>`:''}</td><td class="n">${fmt(h.qty,0)}</td><td class="n">${h.avg_cost??'-'}</td><td class="n">${h.price??'-'}</td><td class="n">${h.market_value!=null?fmt(h.market_value,0):'-'}</td><td class="n ${cls(h.pnl)}">${h.pnl!=null?fmt(h.pnl,0):'-'}</td><td class="n ${cls(h.pnl)}">${esc(h.pnl_pct||'')}</td><td><button class="b sec" onclick="showCode('${h.code}','swing')">分析</button></td></tr>`).join('')}</table>`:ac?'<p class="mut">庫存為空</p>':'')}).join(''):'<p class="mut">尚未新增券商帳戶，請到「券商帳戶」頁新增</p>';
   $('#o-his').innerHTML=r.orders.length?`<table><tr><th>時間</th><th>股票</th><th>帳戶</th><th>動作</th><th class="n">價格</th><th class="n">股數</th><th>結果</th><th class="n">損益</th></tr>${r.orders.map(o=>`<tr><td>${o.time.replace('T',' ').slice(0,16)}</td><td>${o.code} ${esc(o.name)}</td><td>${esc(o.account_name||'模擬下單')}</td><td>${o.mode_name} ${o.action==='open'?'新倉':'平倉'} ${o.side==='buy'?'買':'賣'}</td><td class="n">${o.price}</td><td class="n">${fmt(o.shares,0)}</td><td>${esc(o.result?.status)}</td><td class="n ${cls(o.pnl)}">${o.pnl?fmt(o.pnl,0):''}</td></tr>`).join('')}</table>
    <p class="mut">今日已實現損益 (未扣手續費稅)：<b class="${cls(r.status.realized_today)}">${fmt(r.status.realized_today,0)}</b> 元</p>`:'<p class="mut">尚無委託</p>';
 }
+// 已開瀏覽器、已校正帳務的券商帳戶：打開持倉頁時同步一次，之後每 60 秒 (背景盤中也會自動同步)
+async function syncOpenAccounts(){
+  try{
+    const r=await api('/api/accounts');
+    for(const a of r.accounts.filter(a=>a.type==='web'&&a.browser_open&&a.calibrated.account)){
+      if(a.summary&&a.summary.age_min<1)continue;
+      await api(`/api/accounts/${a.id}/sync`,{}).catch(()=>{});
+    }
+    loadLedger();loadTicker();
+  }catch(e){}
+}
 setInterval(()=>{if(!$('#t-ord').classList.contains('hide'))loadLedger().catch(()=>{})},15000);
+setInterval(()=>{if(!$('#t-ord').classList.contains('hide'))syncOpenAccounts()},60000);
 
 // ---------- 券商帳戶
 async function loadAccounts(){
@@ -553,13 +576,13 @@ async function loadAccounts(){
   $('#da-d').innerHTML=opts(r.default_account.daytrade);$('#da-s').innerHTML=opts(r.default_account.swing);
   if(!$('#na-broker').options.length){$('#na-broker').innerHTML=r.presets.map(p=>`<option value="${esc(p.broker)}" data-url="${esc(p.login_url)}">${esc(p.broker)}</option>`).join('');$('#na-url').value=r.presets[0]?.login_url||''}
   const web=r.accounts.filter(a=>a.type==='web');
-  $('#acc-list').innerHTML=web.length?`<table><tr><th>帳戶</th><th>狀態</th><th>登入網址</th><th>送單</th><th>操作</th></tr>${web.map(a=>{const s=a.summary,c=a.calibrated;
+  $('#acc-list').innerHTML=web.length?`<table><tr><th>帳戶</th><th>狀態</th><th>登入網址</th><th>送單模式</th><th>操作</th></tr>${web.map(a=>{const s=a.summary,c=a.calibrated;
     return `<tr><td><b>${esc(a.name)}</b><div class="mut" style="font-size:12px">${esc(a.broker)} · ${a.id}</div></td>
      <td style="font-size:13px">瀏覽器 ${a.browser_open?'<span class="up">開啟中</span>':'<span class="mut">未開</span>'}<br>
        下單頁校正 ${c.order?'<span class="up">✔</span>':'<span class="dn">✖</span>'} · 帳務校正 ${c.account?'<span class="up">✔</span>':'<span class="dn">✖</span>'}<br>
        ${s?`同步 ${s.age_min<1?'剛剛':Math.round(s.age_min)+' 分前'} · 可用 ${s.cash!=null?fmt(s.cash,0):'-'} · 庫存 ${s.holdings} 檔`:'<span class="mut">尚未同步帳務</span>'}</td>
      <td><input value="${esc(a.login_url||'')}" style="width:220px" onchange="accUpd('${a.id}',{login_url:this.value})"></td>
-     <td><select onchange="accDry('${a.id}',this)"><option value="1" ${a.dry_run?'selected':''}>只填單不送出</option><option value="0" ${a.dry_run?'':'selected'}>實單送出</option></select></td>
+     <td><select onchange="accMode('${a.id}',this)">${Object.entries(SMODES).map(([k,v])=>`<option value="${k}" ${a.submit_mode===k?'selected':''}>${v}</option>`).join('')}</select></td>
      <td><div class="row" style="gap:4px">
        <button class="b sec" onclick="accAct('${a.id}','open',this)">開啟瀏覽器</button>
        <select id="snap-${a.id}"><option value="holdings">庫存頁</option><option value="cash">帳務/交割款頁</option><option value="order">下單頁</option><option value="orders">委託/成交回報頁</option></select>
@@ -568,7 +591,8 @@ async function loadAccounts(){
        <button class="b sec" onclick="accDel('${a.id}')">刪除</button></div></td></tr>`}).join('')}</table>`:'<p class="mut">還沒有券商帳戶</p>';
 }
 window.accUpd=async(id,f)=>{try{await api('/api/accounts/update',{id,...f});$('#acc-msg').innerHTML='<div class="note">✔ 已更新</div>';loadAccounts();loadTicker()}catch(e){$('#acc-msg').innerHTML=`<div class="err">${esc(e.message)}</div>`}};
-window.accDry=(id,el)=>{if(el.value==='0'&&!confirm('確定要切換成「實單送出」？之後對這個帳戶按確認 (或自動交易) 會真的下單。')){el.value='1';return}accUpd(id,{dry_run:el.value==='1'})};
+const SMODES={manual:'你在券商按確定',auto:'系統自動確定',test:'測試(填好後取消)'};
+window.accMode=(id,el)=>{if(el.value==='auto'&&!confirm('確定要切換成「系統自動確定」？之後對這個帳戶的委託 (包含自動交易) 系統會直接按確定送出。')){loadAccounts();return}accUpd(id,{submit_mode:el.value})};
 window.accDel=async id=>{if(!confirm('確定刪除這個帳戶設定？(瀏覽器登入資料與校正檔會保留在電腦上)'))return;try{await api('/api/accounts/remove',{id});loadAccounts()}catch(e){$('#acc-msg').innerHTML=`<div class="err">${esc(e.message)}</div>`}};
 window.accAct=(id,act,btn)=>busy(btn,$('#acc-msg'),async()=>{
   const body=act==='snapshot'?{label:$('#snap-'+id).value}:{};

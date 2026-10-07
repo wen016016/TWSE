@@ -126,7 +126,13 @@ def accounts_summary() -> list[dict]:
 
 
 def account_cash(acc_id: str):
+    """帳戶餘額是否用來限制額度：預設不限制 (台股 T+2 交割，當下銀行餘額不等於可買金額)，帳戶設 cap_by_cash=True 才限制"""
     if acc_id == "paper":
+        return None
+    try:
+        if not brokers.get_account(acc_id).get("cap_by_cash"):
+            return None
+    except ValueError:
         return None
     d = brokers.account_data(acc_id)
     return d.get("cash") if d else None
@@ -281,7 +287,8 @@ def preview(req: dict) -> dict:
     acc_id = acc_id or get_settings()["default_account"][mode]
     acc = brokers.get_account(acc_id)
     t = {"id": uuid.uuid4().hex[:10], "code": info["code"], "name": info["name"], "mode": mode,
-         "account": acc_id, "account_name": acc["name"], "dry_run": bool(acc.get("dry_run")),
+         "account": acc_id, "account_name": acc["name"],
+         "submit_mode": "auto" if acc_id == "paper" else brokers.submit_mode(acc),
          "mode_name": "當沖" if mode == "daytrade" else "波段", "side": side, "action": action, "pos_side": pos_side,
          "price": price, "shares": shares, "lots": shares // 1000, "odd": shares % 1000,
          "amount": round(shares * price), "stop": stop, "target": req.get("target"), "target2": req.get("target2"),
@@ -294,8 +301,11 @@ def preview(req: dict) -> dict:
         cal = brokers.calibrated(acc_id)
         if not cal["order"]:
             t["errors"].append(f"{acc['name']} 下單頁尚未校正，無法下單 (請擷取下單頁並請 Claude 校正)")
-        if acc.get("dry_run"):
-            t["warnings"].append(f"{acc['name']} 為「只填單不送出」模式：只會填好委託單並截圖，不會真的送出")
+        m = brokers.submit_mode(acc)
+        if m == "manual":
+            t["warnings"].append(f"按「確認送出」後，系統會在 {acc['name']} 頁面填好單並跳出券商確認視窗，請到 {acc['name']} 的 Edge 視窗按「確定」(120 秒內)")
+        elif m == "test":
+            t["warnings"].append(f"{acc['name']} 為測試模式：填好單後會在確認視窗按取消，不會送出")
     with _lock:
         lg = ledger()
         lg["pending"] = {k: v for k, v in lg["pending"].items() if v["created"][:10] == _today()}
