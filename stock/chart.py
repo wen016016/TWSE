@@ -41,8 +41,10 @@ def _spread(ys, gap):
     return out
 
 
-def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None, day_split=False, plan=None) -> str:
-    """groups: [(lv, kind, show_key)]，kind = main/short/long；plan = 進出場計畫 (畫在右側未來區)"""
+def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None, day_split=False, plan=None,
+         box=None) -> str:
+    """groups: [(lv, kind, show_key)]，kind = main/short/long；plan = 進出場計畫 (畫在右側未來區)；
+    box = 整理箱 {start_date, box_high, box_low, trigger, stage, window}"""
     d = df.tail(bars) if bars else df
     x = np.arange(len(d))
     o, h, l, c, v = (d[k].values for k in ("open", "high", "low", "close", "volume"))
@@ -73,6 +75,16 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
             ax.axvline(b - 0.5, color="#777", lw=1, ls=":")
             axv.axvline(b - 0.5, color="#777", lw=1, ls=":")
 
+    if box and box.get("box_high"):
+        from matplotlib.patches import Rectangle
+        st = pd.Timestamp(box["start_date"]).tz_localize(d.index.tz) if d.index.tz else pd.Timestamp(box["start_date"])
+        x0 = int(np.searchsorted(d.index, st))
+        if x0 < len(d):
+            bc = "#7b1fa2"
+            ax.add_patch(Rectangle((x0 - 0.5, box["box_low"]), len(d) - x0, box["box_high"] - box["box_low"],
+                                   facecolor=bc, alpha=0.07, edgecolor=bc, lw=1.2, ls="--", zorder=0))
+            ax.text(x0, box["box_high"], f" 整理箱 {box['window']}天 · {box['stage']}", va="bottom", fontsize=9,
+                    color=bc, fontweight="bold")
     ax.vlines(x, l, h, color=col, lw=0.9)
     body = np.maximum(np.abs(c - o), (h.max() - l.min()) * 0.0015)
     ax.bar(x, body, bottom=np.minimum(o, c), color=col, width=0.62, edgecolor=col)
@@ -139,6 +151,8 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
         if plan.get("breakout"):
             plan_items.append((plan["breakout"], f"{'突破追價' if long else '跌破放空'} {plan['breakout']:g}", "#6a1b9a"))
     prices = [l.min(), h.max()] + list(merged) + [p for p, *_ in plan_items] + (list(plan["entry_zone"]) if plan_items else [])
+    if box and box.get("box_high"):
+        prices += [box["box_high"], box["box_low"]]
     lo, hi = min(prices), max(prices)
     pad = (hi - lo) * 0.07
     ax.set_ylim(lo - pad, hi + pad)

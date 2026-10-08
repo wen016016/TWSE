@@ -17,14 +17,4 @@ RISK = {
     "max_price_deviation": 0.05,   # 委託價與現價偏離上限 (5%)，防止打錯價
     "trading_hours": ("08:30", "13:30"),
 }
-
-BROKER = {
-    # paper = 模擬下單 (只記錄)；ibf = 操作國票網頁下單
-    "mode": "paper",
-    # 國票網頁下單登入頁，請改成你實際使用的網址
-    "login_url": "https://www.ibfs.com.tw/",
-    # True = 只幫你填好委託單、截圖，不按最後的送出鍵 (校正 selector 前務必保持 True)
-    "dry_run": True,
-    "selectors_file": BASE_DIR / "broker_selectors.json",
-    "profile_dir": DATA_DIR / "browser-profile",
-}
+# 券商帳戶 (登入網址 / 送單模式 / 校正檔) 改在網頁「券商帳戶」頁管理，見 stock/brokers.py

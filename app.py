@@ -1,6 +1,6 @@
-"""股票分析與半自動下單系統 — 本機網頁伺服器
+"""股票分析與下單系統 — 本機網頁伺服器
 
-啟動：start.bat  或  python app.py ，然後開 http://127.0.0.1:8000
+啟動：雙擊 start.bat (會等伺服器好了才用 Edge 開 http://127.0.0.1:8000)
 """
 import asyncio
 import json
@@ -13,15 +13,14 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from stock import broker, brokers, flow, realtime, scanner, strategy
+from stock import broker, brokers, realtime, scanner, strategy
 from stock.autotrader import trader
 from stock.config import BASE_DIR
 
 
 @asynccontextmanager
 async def lifespan(_app):
-    realtime.collector.start()   # 盤中每 2 秒收集成交明細
-    realtime.streamer.start()    # 盤中每 ~2 秒合併抓指數 / 台指期 / 關注個股 (限速避免被封鎖)，SSE 推給網頁
+    realtime.streamer.start()    # 盤中每 ~2 秒合併抓指數 / 台指期 / 關注個股 (限速避免被封鎖)，SSE 推給網頁；成交明細同時收集
     trader.start()               # 自動交易引擎 (自動交易頁開啟後才會動作)
     yield
 
@@ -165,20 +164,27 @@ def api_ledger():
     return run(f)
 
 
+@app.get("/api/market_risk")
+def api_market_risk():
+    from stock import market_risk
+    return run(lambda: data_cached_risk(market_risk.market_risk))
+
+
+def data_cached_risk(fn):
+    from stock import data as D
+    return D.cached("market_risk", 60, fn)
+
+
+@app.get("/api/forecast")
+def api_forecast():
+    from stock import forecast
+    return run(forecast.forecast)
+
+
 @app.get("/api/sectors")
 def api_sectors(force: bool = False):
     from stock import sectors
     return run(sectors.get, force)
-
-
-@app.get("/api/flow")
-def api_flow(code: str):
-    return run(flow.analyze_flow, code)
-
-
-@app.get("/api/quote")
-def api_quote(code: str):
-    return run(realtime.quote, code)
 
 
 @app.get("/api/auto")

@@ -44,7 +44,45 @@ def _quick(code, df, mode):
     return {"code": code, "quick": sc.total, "ok": bool(ok), "close": float(r["close"])}
 
 
+def scan_base(mode="swing", top=8):
+    """找「整理完成，準備突破」或「剛帶量突破」的股票"""
+    from .base_breakout import detect, pooled_stats
+    from .indicators import tick
+    daily = data.download_daily(universe())
+    info = data.stock_info().set_index("stock_id")
+    found = []
+    for code, df in daily.items():
+        d = add_indicators(df)
+        try:
+            b = detect(d)
+        except Exception:  # noqa: BLE001
+            continue
+        st = b["stage"]
+        if not (st.startswith("整理完成") or "已啟動" in st or st.startswith("整理中 (接近完成)")):
+            continue
+        close = float(d["close"].iloc[-1])
+        entry = b["trigger"] if close < b["trigger"] else close
+        risk = entry - b["stop"]
+        rr = round((b["target"] - entry) / risk, 2) if risk > 0 else 0
+        size = broker.size_position(mode, entry, b["stop"])
+        rank = b["score"] + (25 if "已啟動" in st else 15 if st.startswith("整理完成，準備") else 0)
+        found.append({"code": code, "name": info["stock_name"].get(code, code), "close": close, "total": b["score"],
+                      "tone": st, "rank": rank,
+                      "advice": f"站上 {b['trigger']} 啟動，跌破 {b['stop']} 停損，目標 {b['target']}",
+                      "by_cat": {k: v for k, v in (b.get("pts") or {}).items()},
+                      "plan": {"side": "做多", "entry_zone": [round(entry - tick(entry), 2), entry], "stop": b["stop"],
+                               "target1": b["target"], "target2": round(b["target"] * 1.05, 2), "rr": rr,
+                               "breakout": b["trigger"]},
+                      "side": "buy", "size": size, "top_reasons": b["why"][:3], "base": b,
+                      "actionable": (st.startswith("整理完成，準備") or "已啟動" in st) and size["shares"] > 0 and rr >= 1})
+    found.sort(key=lambda r: -r["rank"])
+    return {"mode": mode, "scanned": len(daily), "passed": len(found), "results": found[:top],
+            "budget": broker.budget_status()[mode], "kind": "base", "stats": pooled_stats(background=True)}
+
+
 def scan(mode="swing", top=8, direction="long"):
+    if direction == "base":
+        return scan_base(mode, top)
     codes = universe()
     daily = data.download_daily(codes)
     rows = [_quick(c, df, mode) for c, df in daily.items()]

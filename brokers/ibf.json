@@ -1,5 +1,5 @@
 {
-  "_說明": "國票 itrade 網頁下單校正檔 (2026/10/07 依擷取頁面設定)。頁面底部固定下單列 + 即時庫存表 + 交割款查詢。",
+  "_說明": "國票 itrade 網頁下單校正檔 (2026/10/07 依擷取頁面設定)。頁面底部固定下單列 + 網站自己的資料介面 (庫存 / 分戶帳餘額 / 委託回報)。",
   "order_page_match": "itrade.ibfs.com.tw/default.aspx",
   "order_page_url": "https://itrade.ibfs.com.tw/default.aspx#%E5%A7%94%E8%A8%97%E5%9B%9E%E5%A0%B1",
   "market_regular": "#btnMS_A",
@@ -40,7 +40,13 @@
                  "map": {"code": "c1", "name": "c2", "type": "c3", "qty": "c9", "price": "c10",
                          "market_value": "c11", "pnl": "c12", "pnl_pct": "c14", "avg_cost": "c17"},
                  "total": "totalamt"},
-    "bank": {"url": "/Data/getBankBalance.ashx", "params": {}, "list": "custBank", "cash": "acctbal", "name": "bankName"}
+    "bank": {"url": "/Data/getBankBalance.ashx", "params": {}, "list": "custBank", "cash": "acctbal", "name": "bankName"},
+    "cost": {"_說明": "證券即時損益：昨日庫存 (gainloss) + 今日新增部位 (gainloss2) 的付出成本，合併算買進均價",
+             "url": "/Data/gainlossData.ashx",
+             "params": {"startDate": "", "endDate": "", "stockNo": "", "vType": "realized", "tradeType": "",
+                        "eType": "gainloss1", "positionType": "", "nowfunc": "account"},
+             "lists": ["gainloss", "gainloss2"], "code_name": "c2", "qty": "c3", "cost": "c4", "pnl": "c11",
+             "total": "todayUBal"}
   },
   "account": {
     "holdings_url": "https://itrade.ibfs.com.tw/default.aspx#%E5%8D%B3%E6%99%82%E5%BA%AB%E5%AD%98",
@@ -49,9 +55,6 @@
     "holdings_cols": {"code": 1, "name": 1, "type": 2, "qty": 8, "price": 9, "pnl": 11, "market_value": 12, "avg_cost": 14},
     "qty_unit": "股",
     "cash_url": "",
-    "cash_selector": "",
-    "settle_url": "https://itrade.ibfs.com.tw/default.aspx#%E4%BA%A4%E5%89%B2%E6%AC%BE%E6%9F%A5%E8%A9%A2",
-    "settle_table": "table.table-hover tbody",
-    "settle_cols": {"trade_date": 0, "settle_date": 2, "amount": 3}
+    "cash_selector": ""
   }
 }

@@ -461,8 +461,27 @@ def _swing_plans(d, lv_s, lv_l, bear_short=False, bear_long=False):
     return ps, pl
 
 
-def _short_chart(d, lv_s, plan, title):
-    return plot(d, title, "1d", [(lv_s, "main", True)], lv_s, bars=60, mas=("ma5", "ma10", "ma20"), plan=plan)
+def _short_chart(d, lv_s, plan, title, box=None):
+    return plot(d, title, "1d", [(lv_s, "main", True)], lv_s, bars=60, mas=("ma5", "ma10", "ma20"), plan=plan, box=box)
+
+
+def score_base(sc, d):
+    """整理型態：整理完成 / 帶量突破 / 跌破整理 → 加減分，回傳偵測結果"""
+    from .base_breakout import detect
+    try:
+        b = detect(d)
+    except Exception:  # noqa: BLE001
+        return None
+    st = b["stage"]
+    if "已啟動" in st:
+        sc.add("型態", 1.5, f"{st}：箱子 {b['box_low']}~{b['box_high']}，突破後目標 {b['target']}")
+    elif st.startswith("整理完成，準備突破"):
+        sc.add("型態", 1.0, f"{st} (完成度 {b['score']:.0f})：站上 {b['trigger']} 就是啟動訊號")
+    elif st.startswith("跌破整理"):
+        sc.add("型態", -1.5, f"{st}：跌破箱底 {b['box_low']}")
+    elif st != "不在整理":
+        sc.add("型態", 0, f"{st} (完成度 {b['score']:.0f})，箱子 {b['box_low']}~{b['box_high']}")
+    return b
 
 
 def _long_chart(d, lv_l, plan, title):
@@ -528,6 +547,7 @@ def analyze_swing(code, entry=None, side="long", charts=True, with_chips=True):
     score_tech(sc, w, "週K", w=1.2, look=13)
     score_tech(sc, d, "日K", w=1.0, look=20)
     score_bias(sc, d, "日K", "ma20", 12)
+    base = score_base(sc, d)
     chips = score_chips(sc, info["code"], d, notes) if with_chips else {}
     chips["flow"] = score_flow(sc, info["code"], notes, 0.6)
     limit_notes(info["code"], notes)
@@ -555,11 +575,11 @@ def analyze_swing(code, entry=None, side="long", charts=True, with_chips=True):
            "time": d.index[-1].strftime("%Y-%m-%d"), "total": total, "tone": tone, "advice": advice,
            "by_cat": sc.by_cat(), "items": sc.items, "plan": plan, "plans": {"short": plan, "long": plan_l},
            "chips": chips, "market_info": minfo,
-           "levels": {"short": clean(lv_s), "long": clean(lv_l), "1wk": clean(lv_w)}, "notes": notes}
+           "levels": {"short": clean(lv_s), "long": clean(lv_l), "1wk": clean(lv_w)}, "notes": notes, "base": base}
     if entry:
         res["position"] = exit_check(close, float(entry), side, plan, lv_s, d, "swing")
     if charts:
-        res["charts"] = {"short": _short_chart(d, lv_s, plan, f"{title}  短線波段 (日K 近60日)"),
+        res["charts"] = {"short": _short_chart(d, lv_s, plan, f"{title}  短線波段 (日K 近60日)", box=base),
                          "long": _long_chart(d, lv_l, plan_l, f"{title}  中長線波段 (日K 近一年)"),
                          "1wk": _weekly_chart(w, lv_w, f"{title}  週K", plan_l)}
     return res
@@ -761,7 +781,8 @@ def levels_report(code, tf="1d"):
         ps, pl = _swing_plans(d, lv_s, lv_l, bear_short=ind["total"] <= -3, bear_long=ind_w["total"] <= -3)
         levels = {"short": clean(lv_s), "long": clean(lv_l)}
         plans = {"short": ps, "long": pl}
-        charts = {"short": _short_chart(d, lv_s, ps, f"{title}  短線波段支撐壓力 (日K 近60日)"),
+        base = score_base(Score(), d)
+        charts = {"short": _short_chart(d, lv_s, ps, f"{title}  短線波段支撐壓力 (日K 近60日)", box=base),
                   "long": _long_chart(d, lv_l, pl, f"{title}  中長線波段支撐壓力 (日K 近一年 + 週K轉折)")}
         last = d.index[-1]
     elif tf == "1wk":
@@ -792,4 +813,5 @@ def levels_report(code, tf="1d"):
         p["text"] = _plan_text(p)
     first = next(iter(levels.values()))
     return {"code": info["code"], "name": info["name"], "tf": tf, "close": first["close"],
-            "time": last.strftime("%Y-%m-%d %H:%M"), "levels": levels, "plans": plans, "indicators": ind, "charts": charts}
+            "time": last.strftime("%Y-%m-%d %H:%M"), "levels": levels, "plans": plans, "indicators": ind, "charts": charts,
+            "base": base if tf == "1d" else None}

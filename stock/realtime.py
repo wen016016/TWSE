@@ -115,18 +115,22 @@ def _exch(code):
 def _parse(m):
     c = m.get("c")
     bid, ask = _arr(m.get("b")), _arr(m.get("a"))
-    price = _f(m.get("z"))
+    trade = m.get("trade") if isinstance(m.get("trade"), dict) else {}
+    # 證交所新格式：z 常是 "-"，最新一筆成交改放在 trade {t, v, z}
+    price = _f(m.get("z")) or _f(trade.get("z"))
     key = _IDX_BY_C.get(c, c)
-    if price is None:  # 這一刻沒有成交 → 用上次成交價，再不行用委買委賣 / 昨收
-        price = _last_price.get(key) or (bid[0] if bid else (ask[0] if ask else _f(m.get("y"))))
+    if price is None:  # 真的還沒成交 (盤前 / 整天無量) → 上次成交價，再不行委買賣中價 / 昨收
+        mid = round((bid[0] + ask[0]) / 2, 2) if bid and ask else (bid[0] if bid else (ask[0] if ask else None))
+        price = _last_price.get(key) or mid or _f(m.get("y"))
     _last_price[key] = price
     prev = _f(m.get("y"))
-    q = {"code": key, "name": m.get("n"), "price": price, "last_vol": _f(m.get("tv")) or 0,
+    last_vol = _f(m.get("tv")) or _f(trade.get("v")) or 0
+    q = {"code": key, "name": m.get("n"), "price": price, "last_vol": last_vol,
          "volume": _f(m.get("v")) or 0, "bid": bid, "ask": ask,
          "bid_vol": _arr(m.get("g")), "ask_vol": _arr(m.get("f")),
          "open": _f(m.get("o")), "high": _f(m.get("h")), "low": _f(m.get("l")),
          "prev_close": prev, "limit_up": _f(m.get("u")), "limit_down": _f(m.get("w")),
-         "time": m.get("t"), "date": m.get("d")}
+         "time": trade.get("t") or m.get("t"), "date": m.get("d")}
     if key in INDEX_EX:
         q.update(name=INDEX_EX[key][2], volume=0, limit_up=None, limit_down=None, bid=[], ask=[],
                  chg=round(price - prev, 2) if price and prev else None,
@@ -322,9 +326,6 @@ class TickCollector:
         self.lock = threading.Lock()
         self.last_error = None
         _ingest_hooks.append(self._ingest)
-
-    def start(self):  # 相容舊介面
-        pass
 
     def add(self, code):
         c = data.resolve(code)["code"]

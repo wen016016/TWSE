@@ -89,15 +89,14 @@ PAPER = {"id": "paper", "name": "模擬下單", "broker": "模擬", "type": "pap
 
 
 def _migrate():
-    """舊版只有國票：broker_selectors.json → brokers/ibf.json"""
-    old = BASE_DIR / "broker_selectors.json"
-    if not ACCOUNTS_FILE.exists():
-        accs = []
-        if old.exists():
-            shutil.copy(old, SEL_DIR / "ibf.json")
-            accs.append({"id": "ibf", "name": "國票", "broker": "國票", "type": "web",
-                         "login_url": "https://www.ibfs.com.tw/", "dry_run": True})
-        _save(ACCOUNTS_FILE, accs)
+    """第一次啟動 (還沒有帳戶清單)：已有校正檔的券商自動建立帳戶；絕不覆蓋 brokers/ 裡的校正檔"""
+    if ACCOUNTS_FILE.exists():
+        return
+    accs = []
+    if (SEL_DIR / "ibf.json").exists():
+        accs.append({"id": "ibf", "name": "國票", "broker": "國票", "type": "web",
+                     "login_url": "https://itrade.ibfs.com.tw/", "dry_run": True, "submit_mode": "manual"})
+    _save(ACCOUNTS_FILE, accs)
 
 
 def accounts(include_paper=True) -> list[dict]:
@@ -515,6 +514,34 @@ class WebBroker:
                     if k in m:
                         h[k] = _num(r.get(m[k], ""))
                 holds.append(h)
+            unreal_total = None
+            if api.get("cost"):  # 買進均價 = 付出成本合計 ÷ 股數合計 (昨日庫存 + 今日新增)
+                try:
+                    cs = api["cost"]
+                    cj = call(page, cs)
+                    agg = {}
+                    for lst in cs["lists"]:
+                        for row in cj.get(lst) or []:
+                            m_ = re.match(r"\s*(\d{4,6}[A-Z]?)", row.get(cs["code_name"], ""))
+                            q_, c_ = _num(row.get(cs["qty"], "")), _num(row.get(cs["cost"], ""))
+                            if not m_ or not q_ or c_ is None:
+                                continue  # 小計列
+                            a_ = agg.setdefault(m_.group(1), [0.0, 0.0, 0.0])
+                            a_[0] += q_
+                            a_[1] += c_
+                            a_[2] += _num(row.get(cs.get("pnl", ""), "")) or 0
+                    for h in holds:
+                        if h["code"] in agg and agg[h["code"]][0]:
+                            q_, c_, u_ = agg[h["code"]]
+                            h["buy_avg"] = round(c_ / q_, 2)
+                            h["cost"] = round(c_)
+                            if cs.get("pnl"):  # 損益一律以券商「未實現損益」頁為準
+                                h["pnl"] = round(u_)
+                                h["pnl_pct"] = f"{u_ / c_ * 100:.2f}%" if c_ else ""
+                    if cs.get("total"):
+                        unreal_total = _num(cj.get(cs["total"], ""))
+                except RuntimeError:
+                    pass
             cash, cash_name = None, ""
             if api.get("bank"):
                 try:
@@ -527,7 +554,9 @@ class WebBroker:
                     pass
             out = {"synced": _now().isoformat(timespec="seconds"), "holdings": holds, "cash": cash, "cash_name": cash_name,
                    "market_value": _num(j.get(ps.get("total", ""), "")) or sum(h.get("market_value") or 0 for h in holds) or None,
-                   "unrealized": sum(h.get("pnl") or 0 for h in holds) or None, "broker_update": j.get("update")}
+                   "unrealized": unreal_total if unreal_total is not None else (sum(h.get("pnl") or 0 for h in holds) or None),
+                   "unrealized_source": "券商未實現損益頁" if unreal_total is not None else "即時庫存加總",
+                   "broker_update": j.get("update")}
             _save(_acc_file(self.id), out)
             return out
 
