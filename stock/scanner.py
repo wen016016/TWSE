@@ -1,7 +1,6 @@
 """選股掃描：先用日K/週K 技術面快篩，再對前幾名做完整分析 (含籌碼、大盤、5分K/1分K)，並依額度算建議張數"""
 from concurrent.futures import ThreadPoolExecutor
 
-import pandas as pd
 
 from . import broker, data
 from .config import DATA_DIR

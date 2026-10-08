@@ -30,19 +30,28 @@ STYLE = {
 BULL_C, BEAR_C = "#c0392b", "#138d5a"
 
 
-def _spread(ys, gap):
-    """標籤 y 座標錯開，避免重疊"""
+def _spread(ys, gap, lo=None, hi=None):
+    """標籤 y 座標錯開 (保持上下順序)，避免重疊；給 lo / hi 時不會推出圖外"""
+    ys = np.array(ys, dtype=float)
     order = np.argsort(ys)
-    out = np.array(ys, dtype=float)
-    for k in range(1, len(order)):
-        a, b = order[k - 1], order[k]
-        if out[b] - out[a] < gap:
-            out[b] = out[a] + gap
+    v = ys[order].copy()
+    for k in range(1, len(v)):          # 由下往上推開
+        if v[k] - v[k - 1] < gap:
+            v[k] = v[k - 1] + gap
+    if hi is not None and len(v) and v[-1] > hi:   # 超出上緣 → 由上往下推回來
+        v[-1] = hi
+        for k in range(len(v) - 2, -1, -1):
+            if v[k + 1] - v[k] < gap:
+                v[k] = v[k + 1] - gap
+    if lo is not None and len(v) and v[0] < lo:
+        v = v + (lo - v[0])
+    out = np.empty_like(v)
+    out[order] = v
     return out
 
 
 def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None, day_split=False, plan=None,
-         box=None) -> str:
+         box=None, seg=None) -> str:
     """groups: [(lv, kind, show_key)]，kind = main/short/long；plan = 進出場計畫 (畫在右側未來區)；
     box = 整理箱 {start_date, box_high, box_low, trigger, stage, window}"""
     d = df.tail(bars) if bars else df
@@ -57,6 +66,22 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
     axv = fig.add_subplot(gs[3, :6], sharex=ax)
     axp = fig.add_subplot(gs[:3, 6], sharey=ax)
 
+    # 依盤別分區 (台指期：夜盤跨午夜，不能用日期切)；seg = 每根 K 棒的標籤，例如 "10/09 夜盤"
+    if seg is not None:
+        seg = list(seg)[-len(d):]
+        starts = [0] + [i for i in range(1, len(seg)) if seg[i] != seg[i - 1]]
+        many = len(starts) > 6
+        for j, s0 in enumerate(starts):
+            e = (starts[j + 1] if j + 1 < len(starts) else len(d)) - 0.5
+            if "夜盤" in seg[s0]:
+                ax.axvspan(s0 - 0.5, e, color="#5c6bc0", alpha=0.08, lw=0)
+                axv.axvspan(s0 - 0.5, e, color="#5c6bc0", alpha=0.08, lw=0)
+            if s0:
+                ax.axvline(s0 - 0.5, color="#999", lw=0.7, ls=":")
+            if not many:
+                ax.text((s0 + e) / 2, 1.005, seg[s0], transform=ax.get_xaxis_transform(), ha="center", va="bottom",
+                        fontsize=9, color="#3949ab" if "夜盤" in seg[s0] else "#555")
+        day_split = False
     # 盤中：依交易日分區，前一天灰底
     if day_split:
         dates = d.index.date
@@ -83,7 +108,8 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
             bc = "#7b1fa2"
             ax.add_patch(Rectangle((x0 - 0.5, box["box_low"]), len(d) - x0, box["box_high"] - box["box_low"],
                                    facecolor=bc, alpha=0.07, edgecolor=bc, lw=1.2, ls="--", zorder=0))
-            ax.text(x0, box["box_high"], f" 整理箱 {box['window']}天 · {box['stage']}", va="bottom", fontsize=9,
+            short = box["stage"].split("，")[0].split(" (")[0]  # 只留「整理完成 / 整理中 / 已啟動」，避免文字延伸到右邊
+            ax.text(x0, box["box_high"], f" 整理箱 {box['window']}天 · {short}", va="bottom", fontsize=9,
                     color=bc, fontweight="bold")
     ax.vlines(x, l, h, color=col, lw=0.9)
     body = np.maximum(np.abs(c - o), (h.max() - l.min()) * 0.0015)
@@ -158,7 +184,7 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
     ax.set_ylim(lo - pad, hi + pad)
 
     # 未來進出場建議區 (最後一根 K 棒右側)
-    F = max(12, n * 0.16) if plan else 0
+    F = max(18, n * 0.24) if plan else 0  # 未來區要夠寬，放得下價位清單
     fx0, fx1 = n + 0.2, n + F
     if plan:
         ax.axvspan(fx0, fx1, color="#fff8e1", alpha=0.9, lw=0, zorder=0)
@@ -170,20 +196,30 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
     elif plan:
         zc = "#e53935" if long else "#16a085"
         ax.fill_between([fx0, fx1], e0, e1 if e1 > e0 else e0 + (hi - lo) * 0.004, color=zc, alpha=0.28, zorder=1)
-        ax.text(fx0 + 0.4, (e0 + e1) / 2, f"{'拉回買進區' if long else '反彈放空區'}\n{e0:g} ~ {e1:g}",
-                fontsize=8.5, va="center", color=zc, fontweight="bold", zorder=5)
-        for p, t, cc in plan_items:
-            ax.hlines(p, fx0, fx1, color=cc, lw=1.8 if t.startswith("停損") else 1.4,
+        for p, t, cc in plan_items:  # 區內只畫線，不在線旁寫字 (價位接近時會疊在一起)
+            ax.hlines(p, fx0, fx1, color=cc, lw=2.0 if t.startswith("停損") else 1.5,
                       ls="-" if not t.startswith(("突破", "跌破")) else "--", zorder=4)
-        py = _spread([p for p, *_ in plan_items], (hi - lo + 2 * pad) * 0.034)
-        for (p, t, cc), yy in zip(plan_items, py):
-            ax.annotate(t, (fx1, p), (fx1 - 0.3, yy), ha="right", va="bottom", fontsize=8.2, color=cc, fontweight="bold", zorder=6)
         ax.annotate("", (fx0 + F * 0.6, plan["target1"]), (fx0 + F * 0.6, (e0 + e1) / 2),
                     arrowprops=dict(arrowstyle="->", color="#ad1457", lw=1.2, ls="--"), zorder=3)
         ax.axvline(fx0, color="#c9a227", lw=0.8)
+        # 價位直接標在線上；太近就上下錯開，用細引線連回自己那條線
+        rows = [((e0 + e1) / 2, f"{'買進區' if long else '放空區'} {e0:g}~{e1:g}", zc)] + \
+               [(p, t, cc) for p, t, cc in plan_items]
+        lo_y, hi_y = ax.get_ylim()
+        gap = (hi_y - lo_y) * 0.05
+        ly = _spread([r_[0] for r_ in rows], gap, lo_y + gap * 0.6, hi_y - gap * 0.6)
+        x_lab = fx0 + F * 0.08
+        x_line = fx0 + F * 0.95  # 引線接到線的右端，不會和文字疊在一起
+        for (p, t, cc), yy in zip(rows, ly):
+            moved = abs(yy - p) > gap * 0.15
+            ax.annotate(t, (x_line, p), (x_lab, yy), ha="left", va="center", fontsize=8.6, color=cc,
+                        fontweight="bold", zorder=10,  # 文字永遠在最上層，不會被圓點 / 線擋住
+                        bbox=dict(facecolor="white", edgecolor=cc, alpha=0.95, pad=1.6, lw=0.9),
+                        arrowprops=dict(arrowstyle="-", color=cc, lw=0.9, shrinkA=0, shrinkB=0) if moved else None)
+            ax.plot([x_line], [p], "o", color=cc, ms=3.5, zorder=6)
     right = fx1 + 0.8
     ys = sorted(merged)
-    label_y = _spread(ys, (hi - lo + 2 * pad) * 0.034)
+    label_y = _spread(ys, (hi - lo + 2 * pad) * 0.042)
     for p, ly in zip(ys, label_y):
         t, cc, ls, lw = merged[p]
         ax.axhline(p, color=cc, ls=ls, lw=lw, alpha=0.9)
@@ -194,7 +230,7 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
     ax.set_xlim(-1, fx1 + max(22, n * 0.2) if plan else n + max(22, n * 0.2))
     ax.grid(alpha=0.25)
     ax.legend(loc="upper left", fontsize=8, ncol=7, framealpha=0.7)
-    ax.set_title(title, fontsize=13, loc="left", fontweight="bold", pad=16 if day_split else 6)
+    ax.set_title(title, fontsize=13, loc="left", fontweight="bold", pad=16 if (day_split or seg is not None) else 6)
     plt.setp(ax.get_xticklabels(), visible=False)
 
     axv.bar(x, v, color=col, width=0.62)
@@ -202,7 +238,7 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
         axv.plot(x, d["vma20"].values, color="#2980b9", lw=0.9)
     axv.grid(alpha=0.25)
     axv.set_ylabel("每根K棒成交量(張)", fontsize=8)
-    fmt = "%H:%M" if tf in ("5m", "1m") else ("%y/%m" if tf == "1wk" else "%y/%m/%d")
+    fmt = "%H:%M" if tf in ("5m", "1m") else ("%m/%d %H時" if tf == "60m" else ("%y/%m" if tf == "1wk" else "%y/%m/%d"))
     step = max(1, len(d) // 9)
     axv.set_xticks(x[::step])
     axv.set_xticklabels([t.strftime(fmt) for t in d.index[::step]], fontsize=8)

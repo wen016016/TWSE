@@ -43,6 +43,41 @@ def _long_daily():
     return data._live(df, data.INDEX, "1d", True)  # 補上今天即時
 
 
+def _night_implied(d: pd.DataFrame):
+    """夜盤 (15:00~隔天 08:45)：用「台指期夜盤 − 收盤價差」推估明天加權指數，當成最新一根 K 棒
+
+    價差 = 台指期日盤收盤 − 加權收盤；推估加權 = 夜盤價 − 價差 (高低點同理)
+    回傳 (新的日K, 推估資訊) ；不在夜盤或抓不到期貨時回傳 (原日K, None)
+    """
+    now = _now()
+    hm = now.hour * 100 + now.minute
+    if not (hm >= 1500 or hm < 845):
+        return d, None
+    try:
+        from .realtime import futures
+        f = futures()
+        day, night = f.get("day"), f.get("night")
+        if not (day and night and day.get("price") and night.get("price")):
+            return d, None
+        twii = float(d["close"].iloc[-1])
+        basis = float(day["price"]) - twii
+        px = float(night["price"]) - basis
+        hi = float(night.get("high") or night["price"]) - basis
+        lo = float(night.get("low") or night["price"]) - basis
+        op = float(night.get("ref") or day["price"]) - basis
+        nxt = d.index[-1] + pd.Timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += pd.Timedelta(days=1)
+        d = d.copy()
+        d.loc[nxt] = [op, max(hi, px, op), min(lo, px, op), px, 0]
+        info = {"tx_night": float(night["price"]), "tx_night_chg_pct": night.get("chg_pct"), "tx_day_close": float(day["price"]),
+                "basis": round(basis, 1), "implied": round(px, 1), "implied_chg_pct": round((px / twii - 1) * 100, 2),
+                "twii_close": twii, "night_time": night.get("time")}
+        return d, info
+    except Exception:  # noqa: BLE001
+        return d, None
+
+
 def _features(d: pd.DataFrame) -> pd.DataFrame:
     d = add_indicators(d, mas=(5, 10, 20, 60, 120))
     f = pd.DataFrame(index=d.index)
@@ -229,7 +264,10 @@ def _sigmoid(x):
 
 def market_risk() -> dict:
     notes = []
-    raw = _long_daily()
+    raw, night = _night_implied(_long_daily())
+    if night:
+        notes.insert(0, f"夜盤推估：台指期夜盤 {night['tx_night']:,.0f} − 收盤價差 {night['basis']:+,.0f} 點 "
+                        f"= 推估加權 {night['implied']:,.0f} ({night['implied_chg_pct']:+.2f}%)，以下指標用推估值當明天最新一根計算")
     d, f = _features(raw)
     out = _outcomes(d)
     close = float(d["close"].iloc[-1])
@@ -299,6 +337,7 @@ def market_risk() -> dict:
     notes.append(f"歷史相似情況：從 {d.index[0]:%Y/%m} 起約 {base['n']} 個交易日中，找出指標狀態最像現在的 {K} 天統計")
     notes.append("這是風險評估不是保證；強勢多頭時乖離可以維持很久，建議搭配跌破 5 日線 / 月線的實際訊號再動作")
     res = {"time": f"{d.index[-1]:%Y-%m-%d}", "close": close, "risk": risk, "level": level, "action": action,
+           "night": night,
            "rules": [{"pts": p, "cat": c, "text": t} for p, c, t in rules], "rule_sum": round(R, 1),
            "analog": analog, "base": base, "analog_days": analog_days, "targets": targets, "typical_pullback": typical,
            "levels": {"short": {"supports": lv_s["supports"], "resistances": lv_s["resistances"]},
@@ -346,7 +385,8 @@ def _chart(d, lv_s, lv_l, res):
     ax.grid(alpha=0.25)
     ax.legend(loc="upper left", fontsize=9, ncol=4)
     color = "#c62828" if res["risk"] >= 50 else ("#ef6c00" if res["risk"] >= 35 else "#2e7d32")
-    ax.set_title(f"加權指數日K　回測風險 {res['risk']:.0f} / 100 ({res['level']})　{res['action']}",
+    tag = "  (最後一根 = 夜盤推估)" if res.get("night") else ""
+    ax.set_title(f"加權指數日K{tag}　回測風險 {res['risk']:.0f} / 100 ({res['level']})　{res['action']}",
                  loc="left", fontsize=13, fontweight="bold", color=color)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")

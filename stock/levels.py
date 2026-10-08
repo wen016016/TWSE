@@ -21,7 +21,7 @@ import pandas as pd
 
 from .indicators import round_tick
 
-TF_NAME = {"1wk": "週K", "1d": "日K", "5m": "5分K", "1m": "1分K"}
+TF_NAME = {"1wk": "週K", "1d": "日K", "60m": "60分K", "5m": "5分K", "1m": "1分K"}
 
 IND = {"ma5": ("5MA", 0.5), "ma10": ("10MA", 0.6), "ma20": ("20MA", 1.0), "ma60": ("60MA(季線)", 1.2),
        "ma120": ("120MA(半年線)", 1.3), "ma240": ("240MA(年線)", 1.5),
@@ -36,6 +36,8 @@ PROFILES = {
                   ind=["ma5", "ma10", "ma20", "bb_up", "bb_mid", "bb_dn"]),
     "long": dict(src="1d", label="中長線", lookback=250, pivot_w=8, rng=0.45, key_window=120,
                  ind=["ma60", "ma120", "ma240"]),
+    "60m": dict(src="60m", label="60分K", lookback=None, pivot_w=4, rng=0.08, key_window=60,
+                ind=["ma20", "ma60", "bb_up", "bb_mid", "bb_dn"]),
     "5m": dict(src="5m", label="5分K", lookback=None, pivot_w=4, rng=0.06, key_window=60,
                ind=["ma20", "ma60", "bb_up", "bb_dn"]),
     "1m": dict(src="1m", label="1分K", lookback=None, pivot_w=6, rng=0.05, key_window=120,
@@ -130,7 +132,7 @@ def _key_candles(d: pd.DataFrame, window: int):
 
 
 def _fmt_time(ts, tf):
-    return ts.strftime("%m/%d %H:%M" if tf in ("5m", "1m") else "%Y/%m/%d")
+    return ts.strftime("%m/%d %H:%M" if tf in ("5m", "1m", "60m") else "%Y/%m/%d")
 
 
 def compute_levels(df: pd.DataFrame, profile: str, extra: list | None = None, n_each=3) -> dict:
@@ -142,7 +144,7 @@ def compute_levels(df: pd.DataFrame, profile: str, extra: list | None = None, n_
     atr = float(d["atr"].iloc[-1])
     n = len(d)
     tol = max(atr * (0.4 if profile == "short" else 0.5), close * 0.004)
-    span = f"{d.index[0]:%m/%d}~{d.index[-1]:%m/%d}" if tf in ("5m", "1m") else f"{d.index[0]:%Y/%m/%d}~{d.index[-1]:%Y/%m/%d}"
+    span = f"{d.index[0]:%m/%d}~{d.index[-1]:%m/%d}" if tf in ("5m", "1m", "60m") else f"{d.index[0]:%Y/%m/%d}~{d.index[-1]:%Y/%m/%d}"
     why = []
 
     # 1. 轉折點

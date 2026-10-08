@@ -765,9 +765,59 @@ def _plan_text(p):
     return "；".join(t)
 
 
+TX_ALIASES = {"TX", "TXF", "台指期", "台指", "台指期近全", "台指近全", "期貨"}
+
+
+def tx_levels_report(tf="5m"):
+    """台指期近全 (夜盤 + 日盤) 支撐壓力：1m 目前這一盤 / 5m 上一盤+這一盤 / 60m、1d 近 30 個交易日"""
+    from . import futures_data as FD
+    tf = {"1wk": "1d"}.get(tf, tf)
+    raw = FD.bars(tf)
+    df = add_indicators(raw[["open", "high", "low", "close", "volume"]], mas=(5, 10, 20, 60))
+    df["tday"], df["sess"] = list(raw["tday"]), list(raw["sess"])
+    full = FD.near_full_5m()
+    paths = FD.day_paths(full)
+    cur_tday, cur_sess = df["tday"].iloc[-1], df["sess"].iloc[-1]
+    prev_close = paths[cur_tday][1] if cur_tday in paths else None
+    extra = [(prev_close, "昨日日盤收盤")] if prev_close else []
+    if tf in ("1m", "5m", "60m"):
+        f5 = full.assign(sess=[FD.session_of(x) for x in full["slot"]])
+        cur = f5[(f5["tday"] == cur_tday) & (f5["sess"] == cur_sess)]
+        if len(cur):
+            extra += [(float(cur["open"].iloc[0]), f"{cur_sess}開盤"), (float(cur["high"].max()), f"{cur_sess}最高"),
+                      (float(cur["low"].min()), f"{cur_sess}最低")]
+    lv = compute_levels(df, tf, extra=extra)
+    name = {"1m": "1分K", "5m": "5分K", "60m": "60分K", "1d": "日K"}[tf]
+    ind = _judge(df, name, lv, look=12)
+    lv["why"].append(ind["judge"])
+    close, atr = float(df["close"].iloc[-1]), float(df["atr"].iloc[-1])
+    bear = ind["total"] <= -3
+    if tf in ("1m", "5m"):
+        p = (plan_short if bear else plan_long)(close, atr * (2 if tf == "5m" else 4), lv, max_stop=0.01, min_stop=0.002)
+        p["horizon"] = "台指期當沖"
+    else:
+        p = (plan_short if bear else plan_long)(close, atr, lv, max_stop=0.04 if tf == "60m" else 0.06)
+        p["horizon"] = "台指期波段"
+    p["text"] = _plan_text(p)
+    contract = str(full["contract"].iloc[-1]) if "contract" in full else "近月"
+    seg = [f"{pd.Timestamp(t):%m/%d} {s}" for t, s in zip(df["tday"], df["sess"])] if tf != "1d" else None
+    span = {"1m": f"{cur_sess} 1分K", "5m": "上一盤 + 這一盤 5分K", "60m": "近 30 個交易日 60分K (夜盤+日盤)",
+            "1d": "近 30 個交易日日K (一天 = 夜盤+日盤)"}[tf]
+    title = f"台指期近全 {contract}  {span}  支撐壓力"
+    chart = plot(df, title, tf, [(lv, "main", True)], lv, mas=("ma5", "ma20", "ma60"), plan=p, seg=seg,
+                 bars=200 if tf == "60m" else None)
+    return {"code": "TX", "name": f"台指期近全 {contract}", "tf": tf, "close": close, "futures": True,
+            "time": f"{df.index[-1]:%Y-%m-%d %H:%M}", "session": cur_sess,
+            "levels": {tf: clean(lv)}, "plans": {tf: p}, "indicators": ind, "charts": {tf: chart}, "base": None}
+
+
 def levels_report(code, tf="1d"):
     """支撐壓力查詢 + 圖 + 未來進出場建議
-    1d  → 短線、中長線各一張；1wk → 週K；5m → 前一日+今日；1m → 今日"""
+    1d  → 短線、中長線各一張；1wk → 週K；5m → 前一日+今日；1m → 今日；代號 TX / 台指期 → 台指期近全"""
+    if code.strip().upper() in TX_ALIASES or code.strip() in TX_ALIASES:
+        return tx_levels_report(tf)
+    if tf == "60m":
+        raise ValueError("60分K 目前只提供台指期 (代號輸入 TX 或 台指期)")
     info = data.resolve(code)
     title = f"{info['code']} {info['name']}"
     if tf == "1d":

@@ -24,7 +24,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from . import data  # noqa: E402
 from . import futures_data as FD  # noqa: E402
 from .indicators import add_indicators  # noqa: E402
 from .levels import compute_levels  # noqa: E402

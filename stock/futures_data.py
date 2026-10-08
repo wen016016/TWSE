@@ -191,6 +191,50 @@ def near_full_5m(n_days=30) -> pd.DataFrame:
     return data.cached("tx_near_full", 20, load)
 
 
+def session_of(slot) -> str:
+    return "夜盤" if slot is not None and slot < NIGHT_SLOTS else "日盤"
+
+
+def bars(tf: str) -> pd.DataFrame:
+    """台指期近全各週期 K 線 (欄位含 open/high/low/close/volume、tday、sess)
+    1m：目前這一盤；5m：上一盤 + 這一盤；60m：近 30 個交易日；1d：近 30 個交易日 (一天 = 夜盤 + 日盤)"""
+    df = near_full_5m()
+    df = df.assign(sess=[session_of(s) for s in df["slot"]])
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    if tf == "1m":
+        base = _near_base()
+        now = _now()
+        hm = now.hour * 100 + now.minute
+        night = hm >= 1500 or hm < 845
+        if night:
+            start = now.date() if hm >= 1500 else now.date() - dt.timedelta(days=1)
+            while start.weekday() >= 5:
+                start -= dt.timedelta(days=1)
+            m1 = _chart_1m(base + "-M", start, True)
+        else:
+            m1 = _chart_1m(base + "-F", now.date(), False)
+        if m1 is None or m1.empty:
+            raise RuntimeError("目前這一盤還沒有 1 分K 資料")
+        m1 = m1.assign(tday=[trade_day_of(t) for t in m1.index], sess="夜盤" if night else "日盤")
+        return m1
+    if tf == "5m":
+        keys = list(dict.fromkeys(zip(df["tday"], df["sess"])))[-2:]
+        return df[[k in keys for k in zip(df["tday"], df["sess"])]]
+    if tf == "60m":
+        parts = []
+        for (d, s), g in df.groupby(["tday", "sess"], sort=False):
+            b = g[["open", "high", "low", "close", "volume"]].resample("60min", label="left", closed="left").agg(agg).dropna()
+            parts.append(b.assign(tday=d, sess=s))
+        return pd.concat(parts).sort_index()
+    if tf == "1d":
+        g = df.groupby("tday")
+        out = pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(), "low": g["low"].min(),
+                            "close": g["close"].last(), "volume": g["volume"].sum()})
+        out.index = pd.to_datetime(out.index).tz_localize(TZ)
+        return out.assign(tday=list(g.groups.keys()), sess="全日")
+    raise ValueError("台指期週期只有 1m / 5m / 60m / 1d")
+
+
 def day_paths(df: pd.DataFrame) -> dict:
     """{交易日: (每格收盤 [228], 前一交易日日盤收盤)}，缺的格往前補"""
     out, prev_close = {}, None

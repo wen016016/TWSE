@@ -60,8 +60,8 @@ def api_analyze(code: str, mode: str = "swing", entry: float | None = None, side
 
 @app.get("/api/levels")
 def api_levels(code: str, tf: str = "1d"):
-    if tf not in ("1wk", "1d", "5m", "1m"):
-        raise HTTPException(400, "tf 只能是 1wk / 1d / 5m / 1m")
+    if tf not in ("1wk", "1d", "60m", "5m", "1m"):
+        raise HTTPException(400, "tf 只能是 1wk / 1d / 60m / 5m / 1m")
     return run(strategy.levels_report, code, tf)
 
 

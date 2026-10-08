@@ -103,8 +103,9 @@ tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
 <!-- 支撐壓力 -->
 <section id="t-lv" class="hide">
   <div class="card row">
-    <input id="l-code" placeholder="代號或名稱" value="2330" style="width:170px">
-    <select id="l-tf"><option value="1d">日K</option><option value="1wk">週K</option><option value="5m">5分K</option><option value="1m">1分K</option></select>
+    <input id="l-code" placeholder="代號 / 名稱 / TX (台指期)" value="2330" style="width:200px">
+    <select id="l-tf"><option value="1d">日K</option><option value="1wk">週K</option><option value="60m">60分K (台指期)</option><option value="5m">5分K</option><option value="1m">1分K</option></select>
+    <button class="b sec" onclick="$('#l-code').value='TX';if($('#l-tf').value==='1wk')$('#l-tf').value='5m';$('#l-go').click()">看台指期夜盤 / 日盤</button>
     <button class="b" id="l-go">查詢支撐壓力</button>
     <label class="mut"><input type="checkbox" id="l-live" checked> 即時更新 (每 30 秒重畫)</label>
   </div>
@@ -297,7 +298,7 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t==='fc'&&!$('#fc-out').innerHTML)$('#fc-go').click();
   if(b.dataset.t==='fc'&&!$('#risk-out').innerHTML)$('#risk-go').click();
 });
-const NAMES={'1wk':'週K','1d':'日K','5m':'5分K 當沖','1m':'1分K 當沖','short':'短線波段','long':'中長線波段','daytrade':'當沖'};
+const NAMES={'1wk':'週K','1d':'日K','60m':'60分K','5m':'5分K 當沖','1m':'1分K 當沖','short':'短線波段','long':'中長線波段','daytrade':'當沖'};
 
 // ---------- 即時資料
 // 指數 / 台指期 / 關注個股：伺服器每秒抓，有變動用 SSE 推過來 (證交所約每 5 秒一筆、台指期約每 1 秒)
@@ -499,7 +500,7 @@ async function runLevels(q,silent){
     h+=`<div class="card chart"><div class="big">${esc(r.code)} ${esc(r.name)} <span class="mut" style="font-size:14px">${NAMES[k]} · ${r.time}</span></div>
       ${p?`<div class="note" style="font-size:14px;margin-top:8px"><b>未來進出場：</b>${esc(p.text)}</div>`:''}
       <img style="margin-top:10px" src="data:image/png;base64,${r.charts[k]}"></div>`;
-    h+=`<div class="grid" style="grid-template-columns:minmax(300px,1.4fr) minmax(280px,1fr)"><div>${levelsBlock(r.levels[k],NAMES[k])}</div><div>${p?planBlock(p,{code:r.code,mode:k==='5m'||k==='1m'?'daytrade':'swing',close:r.close,reason:'支撐壓力'}):''}</div></div>`;
+    h+=`<div class="grid" style="grid-template-columns:minmax(300px,1.4fr) minmax(280px,1fr)"><div>${levelsBlock(r.levels[k],NAMES[k])}</div><div>${p?planBlock(p,r.futures?null:{code:r.code,mode:k==='5m'||k==='1m'?'daytrade':'swing',close:r.close,reason:'支撐壓力'}):''}</div></div>`;
   }
   $('#l-out').innerHTML=h+baseBlock(r.base)+`<div class="card"><h3 style="margin-top:0">技術指標判讀 <span class="${cls(r.indicators.total)}">${sgn(r.indicators.total)}</span></h3><p><b>${esc(r.indicators.judge)}</b> <span class="mut">(更新 ${new Date().toLocaleTimeString('zh-TW',{hour12:false})})</span></p><table>${itemsTable(r.indicators.items)}</table></div>`;
   if(silent)window.scrollTo(0,y);
@@ -667,9 +668,9 @@ $('#st-save').onclick=()=>busy($('#st-save'),$('#st-msg'),async()=>{
 // ---------- 大盤回測風險 / 減碼建議
 function renderRisk(r){
   const rc=r.risk>=65?'dn':r.risk>=50?'dn':r.risk>=35?'':'up';
-  const lvColor=r.risk>=50?'var(--dn)':r.risk>=35?'#ef6c00':'var(--up)';
+  const lvColor=r.risk>=65?'#c62828':r.risk>=50?'#e53935':r.risk>=35?'#ef6c00':'#2e7d32';  // 風險：紅=危險、綠=安全 (不套漲紅跌綠)
   const a=r.analog,b=r.base;
-  const cmp=(x,y)=>x==null?'-':`<b>${x}%</b> <span class="mut">(平常 ${y}%)</span>${x>y+5?' <span class="dn">↑</span>':x<y-5?' <span class="up">↓</span>':''}`;
+  const cmp=(x,y)=>x==null?'-':`<b>${x}%</b> <span class="mut">(平常 ${y}%)</span>${x>y+5?' <span style="color:#e53935">↑ 比平常危險</span>':x<y-5?' <span style="color:#2e7d32">↓ 比平常安全</span>':''}`;
   const rot=r.rotation;
   let rotHtml='';
   if(rot&&rot.flows.length){
@@ -683,11 +684,11 @@ function renderRisk(r){
   }
   $('#risk-out').innerHTML=`
   <div class="card"><div class="row" style="justify-content:space-between;align-items:flex-start">
-    <div><div class="mut">加權指數 ${r.time}</div><div class="big">${fmt(r.close)}</div></div>
+    <div><div class="mut">加權指數 ${r.time}${r.night?' (夜盤推估)':''}</div><div class="big">${fmt(r.close)}</div>${r.night?`<div class="mut" style="font-size:13px">台指期夜盤 ${fmt(r.night.tx_night,0)} (${pc(r.night.tx_night_chg_pct)}%) − 價差 ${sgn(r.night.basis)} · 今日加權收盤 ${fmt(r.night.twii_close)} → 推估 ${pc(r.night.implied_chg_pct)}%</div>`:''}</div>
     <div style="text-align:right"><div class="mut">回測風險</div>
       <div style="font-size:34px;font-weight:bold;color:${lvColor}">${r.risk} <span style="font-size:18px">/ 100 · ${esc(r.level)}</span></div>
       <div style="font-size:17px"><b>${esc(r.action)}</b></div>
-      ${r.portfolio&&r.portfolio.cut_amount?`<div class="dn">你的庫存市值 ${fmt(r.portfolio.market_value,0)} → 建議減碼約 <b>${fmt(r.portfolio.cut_amount,0)}</b> 元</div>`:r.portfolio?`<div class="mut">你的庫存市值 ${fmt(r.portfolio.market_value,0)}，目前不需要減碼</div>`:''}</div></div>
+      ${r.portfolio&&r.portfolio.cut_amount?`<div style="color:#e53935">你的庫存市值 ${fmt(r.portfolio.market_value,0)} → 建議減碼約 <b>${fmt(r.portfolio.cut_amount,0)}</b> 元</div>`:r.portfolio?`<div class="mut">你的庫存市值 ${fmt(r.portfolio.market_value,0)}，目前不需要減碼</div>`:''}</div></div>
     <div class="bar" style="margin-top:10px;height:14px"><i style="width:${r.risk}%;background:${lvColor}"></i></div>
     ${r.notes.map(n=>`<div class="note" style="font-size:13px">${esc(n)}</div>`).join('')}</div>
   <div class="grid">
@@ -700,7 +701,7 @@ function renderRisk(r){
   <div class="card chart" style="margin-top:14px"><img src="data:image/png;base64,${r.chart}"></div>
   <div class="grid" style="grid-template-columns:minmax(300px,1.2fr) minmax(280px,1fr)">
     <div class="card"><h3 style="margin-top:0">判斷依據 <span class="mut" style="font-size:13px">正分 = 回測風險升高</span></h3>
-      <table>${r.rules.map(x=>`<tr><td class="n ${x.pts>0?'dn':x.pts<0?'up':'mut'}" style="width:52px">${x.pts>0?'+':''}${x.pts}</td><td style="width:70px"><span class="tag">${esc(x.cat)}</span></td><td>${esc(x.text)}</td></tr>`).join('')}</table></div>
+      <table>${r.rules.map(x=>`<tr><td class="n ${x.pts>0?'':x.pts<0?'':'mut'}" style="width:52px;color:${x.pts>0?'#e53935':x.pts<0?'#2e7d32':''}">${x.pts>0?'+':''}${x.pts}</td><td style="width:70px"><span class="tag">${esc(x.cat)}</span></td><td>${esc(x.text)}</td></tr>`).join('')}</table></div>
     <div>
       <div class="card"><h3 style="margin-top:0">如果回測，可能回到哪</h3><table>
         ${r.targets.map(t=>`<tr><td>${esc(t.name)}</td><td class="n"><b>${fmt(t.price,0)}</b></td><td class="n dn">${t.dist_pct}%</td></tr>`).join('')}
