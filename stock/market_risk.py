@@ -301,13 +301,13 @@ def market_risk() -> dict:
     p_dd = (analog["dd2_5d"] or 0) / 100
     risk = round(50 * p_dd + 50 * _sigmoid(0.45 * (R - 1)), 0)
     if risk >= 65:
-        level, action, cut = "高", "建議減碼一半；跌破月線再出清", 0.5
+        level, action = "高", "建議持股降到 2~4 成；跌破月線再出清"
     elif risk >= 50:
-        level, action, cut = "偏高", "建議減碼約 1/3，或把停利拉近到 5 日線", 1 / 3
+        level, action = "偏高", "建議持股 4~6 成，或把停利拉近到 5 日線"
     elif risk >= 35:
-        level, action, cut = "中", "可以續抱，但設好停利 (跌破 5 日線先減碼)", 0.0
+        level, action = "中", "建議持股 6~8 成，設好停利 (跌破 5 日線先減碼)"
     else:
-        level, action, cut = "低", "續抱，回測到支撐反而是加碼機會", 0.0
+        level, action = "低", "建議持股 8~10 成，回測到支撐反而是加碼機會"
 
     x = d.iloc[-1]
     targets = [{"name": "5 日線", "price": round(float(x["ma5"]), 0)}, {"name": "10 日線", "price": round(float(x["ma10"]), 0)},
@@ -320,24 +320,37 @@ def market_risk() -> dict:
     targets.sort(key=lambda t: -t["price"])
     typical = round(close * (1 + (analog["median_dd5"] or 0) / 100), 0)
 
-    # 套到國票等券商庫存
+    market_action = action
+    # 套到你的實際倉位：股票市值 ÷ (市值 + 分戶帳現金 + 交割中淨額)，和這個風險等級的建議持股比例比較
     portfolio = None
     try:
         from . import brokers
-        mv = 0
-        for a in brokers.accounts(False):
-            s = brokers.account_summary(a["id"])
-            if s and s.get("market_value"):
-                mv += s["market_value"]
-        if mv:
-            portfolio = {"market_value": round(mv), "cut_ratio": round(cut, 2), "cut_amount": round(mv * cut)}
-    except Exception:  # noqa: BLE001
-        pass
+        pos = brokers.position_summary()
+        if pos:
+            lo_t, hi_t = (80, 100) if risk < 35 else (60, 80) if risk < 50 else (40, 60) if risk < 65 else (20, 40)
+            exp, eq, mv = pos["exposure"], pos["equity"], pos["market_value"]
+            if exp > hi_t + 2:
+                amt = round(mv - eq * hi_t / 100)
+                advice = f"目前持股 {exp:.0f}%，高於這個風險等級建議的 {lo_t}~{hi_t}%，建議減碼約 {amt:,} 元 (降到 {hi_t}%)"
+                act = "減碼"
+            elif exp < lo_t - 2:
+                amt = round(eq * lo_t / 100 - mv)
+                advice = (f"目前持股 {exp:.0f}%，低於建議的 {lo_t}~{hi_t}%，已經保留足夠現金；"
+                          f"可分批加碼約 {amt:,} 元 (到 {lo_t}%)，回測到支撐再買較安全")
+                act = "可加碼"
+            else:
+                amt = 0
+                advice = f"目前持股 {exp:.0f}%，在建議的 {lo_t}~{hi_t}% 之內，維持即可，不用再減碼"
+                act = "維持"
+            portfolio = {**pos, "target_lo": lo_t, "target_hi": hi_t, "act": act, "amount": amt, "advice": advice}
+            action = advice
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"倉位資料取得失敗：{e}")
 
     notes.append(f"歷史相似情況：從 {d.index[0]:%Y/%m} 起約 {base['n']} 個交易日中，找出指標狀態最像現在的 {K} 天統計")
     notes.append("這是風險評估不是保證；強勢多頭時乖離可以維持很久，建議搭配跌破 5 日線 / 月線的實際訊號再動作")
     res = {"time": f"{d.index[-1]:%Y-%m-%d}", "close": close, "risk": risk, "level": level, "action": action,
-           "night": night,
+           "night": night, "market_action": market_action,
            "rules": [{"pts": p, "cat": c, "text": t} for p, c, t in rules], "rule_sum": round(R, 1),
            "analog": analog, "base": base, "analog_days": analog_days, "targets": targets, "typical_pullback": typical,
            "levels": {"short": {"supports": lv_s["supports"], "resistances": lv_s["resistances"]},
@@ -386,7 +399,7 @@ def _chart(d, lv_s, lv_l, res):
     ax.legend(loc="upper left", fontsize=9, ncol=4)
     color = "#c62828" if res["risk"] >= 50 else ("#ef6c00" if res["risk"] >= 35 else "#2e7d32")
     tag = "  (最後一根 = 夜盤推估)" if res.get("night") else ""
-    ax.set_title(f"加權指數日K{tag}　回測風險 {res['risk']:.0f} / 100 ({res['level']})　{res['action']}",
+    ax.set_title(f"加權指數日K{tag}　回測風險 {res['risk']:.0f} / 100 ({res['level']})　{res.get('market_action', res['action'])}",
                  loc="left", fontsize=13, fontweight="bold", color=color)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")

@@ -15,7 +15,14 @@ UNIVERSE = """2330 2317 2454 2308 2382 2412 2881 2882 2891 2303 3711 2886 2884 1
 3260 8299 5347 6488 3105 4966 6147 5483 3293 8069 6274 3324 3006 2360 3583 6182 2059 3014 2313 2492""".split()
 
 
-def universe():
+def universe(scope="all"):
+    """掃描名單：scope = watch 只用自選清單；否則用 watchlist.txt 或預設 100 檔"""
+    if scope == "watch":
+        from .watchlist import items
+        codes = [x["code"] for x in items()]
+        if not codes:
+            raise ValueError("自選清單是空的，請先到「自選清單」頁加入股票")
+        return codes
     f = DATA_DIR / "watchlist.txt"
     if f.exists():
         codes = [l.strip().split()[0] for l in f.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
@@ -43,11 +50,11 @@ def _quick(code, df, mode):
     return {"code": code, "quick": sc.total, "ok": bool(ok), "close": float(r["close"])}
 
 
-def scan_base(mode="swing", top=8):
+def scan_base(mode="swing", top=8, scope="all"):
     """找「整理完成，準備突破」或「剛帶量突破」的股票"""
     from .base_breakout import detect, pooled_stats
     from .indicators import tick
-    daily = data.download_daily(universe())
+    daily = data.download_daily(universe(scope))
     info = data.stock_info().set_index("stock_id")
     found = []
     for code, df in daily.items():
@@ -79,10 +86,10 @@ def scan_base(mode="swing", top=8):
             "budget": broker.budget_status()[mode], "kind": "base", "stats": pooled_stats(background=True)}
 
 
-def scan(mode="swing", top=8, direction="long"):
+def scan(mode="swing", top=8, direction="long", scope="all"):
     if direction == "base":
-        return scan_base(mode, top)
-    codes = universe()
+        return scan_base(mode, top, scope)
+    codes = universe(scope)
     daily = data.download_daily(codes)
     rows = [_quick(c, df, mode) for c, df in daily.items()]
     rows = [r for r in rows if r["ok"]]

@@ -192,9 +192,30 @@ def account_summary(acc_id: str) -> dict | None:
     if not a:
         return None
     age = (_now() - dt.datetime.fromisoformat(a["synced"])).total_seconds() / 60
+    mv, cash, pend = a.get("market_value") or 0, a.get("cash") or 0, a.get("pending") or 0
     return {"synced": a["synced"], "age_min": round(age, 1), "cash": a.get("cash"),
             "holdings": len(a.get("holdings", [])), "market_value": a.get("market_value"),
-            "unrealized": a.get("unrealized")}
+            "unrealized": a.get("unrealized"), "pending": a.get("pending"),
+            "equity": round(mv + cash + pend) if (mv or cash or pend) else None}
+
+
+def position_summary() -> dict | None:
+    """所有券商帳戶合計：股票市值、分戶帳現金、交割中淨額、總資產、持股比例"""
+    mv = cash = pend = 0.0
+    names = []
+    for a in accounts(False):
+        s = account_summary(a["id"])
+        if not s:
+            continue
+        names.append(a["name"])
+        mv += s.get("market_value") or 0
+        cash += s.get("cash") or 0
+        pend += s.get("pending") or 0
+    equity = mv + cash + pend
+    if equity <= 0:
+        return None
+    return {"accounts": names, "market_value": round(mv), "cash": round(cash), "pending": round(pend),
+            "equity": round(equity), "exposure": round(mv / equity * 100, 1)}
 
 
 # ----------------------------------------------------------------- 瀏覽器
@@ -542,6 +563,22 @@ class WebBroker:
                         unreal_total = _num(cj.get(cs["total"], ""))
                 except RuntimeError:
                     pass
+            settles = []
+            if api.get("settle"):  # 交割款：交割日還沒到 (或今天 10:00 前) 的 = 交割中，還沒進出分戶帳
+                try:
+                    ss = api["settle"]
+                    now = _now()
+                    for row in call(page, ss).get(ss["list"]) or []:
+                        amt = _num(row.get(ss["amount"], ""))
+                        sd = row.get(ss["settle_date"], "")
+                        if amt is None or not re.match(r"\d{4}/\d{2}/\d{2}", sd):
+                            continue
+                        sdate = dt.datetime.strptime(sd, "%Y/%m/%d").date()
+                        pending = sdate > now.date() or (sdate == now.date() and now.hour < 10)
+                        settles.append({"trade_date": row.get(ss["trade_date"], ""), "settle_date": sd,
+                                        "amount": amt, "pending": pending})
+                except RuntimeError:
+                    pass
             cash, cash_name = None, ""
             if api.get("bank"):
                 try:
@@ -556,6 +593,7 @@ class WebBroker:
                    "market_value": _num(j.get(ps.get("total", ""), "")) or sum(h.get("market_value") or 0 for h in holds) or None,
                    "unrealized": unreal_total if unreal_total is not None else (sum(h.get("pnl") or 0 for h in holds) or None),
                    "unrealized_source": "券商未實現損益頁" if unreal_total is not None else "即時庫存加總",
+                   "settlements": settles, "pending": round(sum(x["amount"] for x in settles if x["pending"])),
                    "broker_update": j.get("update")}
             _save(_acc_file(self.id), out)
             return out

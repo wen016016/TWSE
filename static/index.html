@@ -42,6 +42,7 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 ul.why{margin:6px 0;padding-left:20px;line-height:1.7}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:20}
 .modal.hide{display:none}
+#wl-out th,#wl-out button{white-space:nowrap}
 .sbar{height:10px;border-radius:3px;background:var(--acc);opacity:.75;min-width:2px}
 tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
 .mini td{padding:3px 6px;font-size:13px;border:0}
@@ -73,6 +74,7 @@ tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
   </div>
 </header>
 <nav id="nav">
+  <button data-t="wl">自選清單</button>
   <button data-t="ana" class="on">個股進出場</button>
   <button data-t="lv">支撐壓力</button>
   <button data-t="fc">大盤風險/預測</button>
@@ -88,7 +90,7 @@ tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
 <!-- 個股分析 -->
 <section id="t-ana">
   <div class="card row">
-    <input id="a-code" placeholder="代號或名稱 例 2330" value="2330" style="width:170px">
+    <input id="a-code" list="wl-dl" placeholder="代號或名稱 例 2330" value="2330" style="width:170px">
     <select id="a-mode"><option value="swing">波段 (週K+日K)</option><option value="daytrade">當沖 (日K+5分K+1分K)</option></select>
     <span class="mut">已持有？成本</span><input id="a-entry" type="number" step="0.01" placeholder="選填">
     <select id="a-side"><option value="long">多單</option><option value="short">空單</option></select>
@@ -100,10 +102,23 @@ tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
   <div id="a-out"></div>
 </section>
 
+<!-- 自選清單 -->
+<section id="t-wl" class="hide">
+  <div class="card row">
+    <input id="wl-code" list="wl-dl" placeholder="代號或名稱 例 2330" style="width:180px">
+    <input id="wl-note" placeholder="備註 (選填，例：等回測月線)" style="width:240px">
+    <button class="b" id="wl-add">加入自選</button>
+    <button class="b sec" id="wl-eval">重新評估</button>
+    <span class="mut" id="wl-info">現價即時推送；分數 / 型態 / 支撐壓力每 60 秒可重新評估</span>
+  </div>
+  <div class="card"><div id="wl-out"><p class="mut">載入中…</p></div></div>
+</section>
+<datalist id="wl-dl"></datalist>
+
 <!-- 支撐壓力 -->
 <section id="t-lv" class="hide">
   <div class="card row">
-    <input id="l-code" placeholder="代號 / 名稱 / TX (台指期)" value="2330" style="width:200px">
+    <input id="l-code" list="wl-dl" placeholder="代號 / 名稱 / TX (台指期)" value="2330" style="width:200px">
     <select id="l-tf"><option value="1d">日K</option><option value="1wk">週K</option><option value="60m">60分K (台指期)</option><option value="5m">5分K</option><option value="1m">1分K</option></select>
     <button class="b sec" onclick="$('#l-code').value='TX';if($('#l-tf').value==='1wk')$('#l-tf').value='5m';$('#l-go').click()">看台指期夜盤 / 日盤</button>
     <button class="b" id="l-go">查詢支撐壓力</button>
@@ -143,6 +158,7 @@ tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
 <!-- 選股 -->
 <section id="t-scan" class="hide">
   <div class="card row">
+    <select id="s-scope"><option value="all">觀察名單 (100 檔)</option><option value="watch">只掃自選清單</option></select>
     <select id="s-mode"><option value="swing">波段</option><option value="daytrade">當沖</option></select>
     <select id="s-dir"><option value="long">找做多標的</option><option value="short">找做空標的</option><option value="base">找整理完成、準備啟動</option></select>
     <span class="mut">取前</span><input id="s-top" type="number" value="8" min="1" max="20" style="width:70px"><span class="mut">檔</span>
@@ -293,7 +309,8 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x===b));
   document.querySelectorAll('main>section').forEach(s=>s.classList.toggle('hide',s.id!=='t-'+b.dataset.t));
   try{localStorage.setItem('tab',b.dataset.t)}catch(e){}
-  if(b.dataset.t==='ord'){loadLedger();syncOpenAccounts()} if(b.dataset.t==='acc')loadAccounts(); if(b.dataset.t==='set')loadSettings(); if(b.dataset.t==='auto')loadAuto();
+  if(b.dataset.t==='ord'){loadLedger();syncOpenAccounts()} if(b.dataset.t==='wl')loadWl(true);
+  connectStream(); if(b.dataset.t==='acc')loadAccounts(); if(b.dataset.t==='set')loadSettings(); if(b.dataset.t==='auto')loadAuto();
   if(b.dataset.t==='sec'&&!$('#sec-out').innerHTML)$('#sec-go').click();
   if(b.dataset.t==='fc'&&!$('#fc-out').innerHTML)$('#fc-go').click();
   if(b.dataset.t==='fc'&&!$('#risk-out').innerHTML)$('#risk-go').click();
@@ -320,10 +337,11 @@ function renderLive(d){
   const h=d.health||{};
   const warn=[h.mis?.blocked?`證交所暫時限制連線 (${h.mis.retry_in}秒後重試，先用最後資料)`:'',h.taifex?.blocked?`期交所暫時限制連線 (${h.taifex.retry_in}秒)`:''].filter(Boolean).join(' · ');
   $('#tk-time').innerHTML=`報價 ${q?.time||'-'}${f?.current?.time?' · 期貨 '+f.current.time:''} · 推送 ${d.ts||''}${warn?` · <span class="dn">${esc(warn)}</span>`:''}`;
-  renderQuoteStrip();renderPosPrices();
+  renderQuoteStrip();renderPosPrices();renderWlPrices();
 }
 function connectStream(){
-  const codes=[LAST_A?.code].filter(Boolean).join(',');
+  const onWl=!$('#t-wl').classList.contains('hide');
+  const codes=[...new Set([LAST_A?.code,...(onWl?WL.map(x=>x.code):[])].filter(Boolean))].join(',');
   if(ES&&codes===ES_CODES)return;
   ES_CODES=codes;if(ES)ES.close();
   ES=new EventSource('/api/stream?codes='+encodeURIComponent(codes));
@@ -383,12 +401,15 @@ function planBlock(p,o){
   const [e0,e1]=[...p.entry_zone].sort((x,y)=>x-y);
   return `<div class="card"><h3 style="margin-top:0">${esc(p.horizon||'')} 進出場計畫 (${p.side})</h3>
    ${p.note?`<div class="err">⚠ ${esc(p.note)}</div>`:''}
+   ${p.regime?`<div><b>${esc(p.regime)}</b>${p.box?` <span class="mut">箱型 ${p.box.box_low} ~ ${p.box.box_high} (${p.box.width_atr} 倍 ATR，${esc(p.box.stage)})</span>`:''}</div>`:''}
    <table><tr><td>${long?'拉回買進區':'反彈放空區'}</td><td class="n"><b>${e0} ~ ${e1}</b></td></tr>
    ${p.breakout?`<tr><td>${long?'突破追價':'跌破放空'}</td><td class="n"><b>${p.breakout}</b> ${long?'以上':'以下'}</td></tr>`:''}
    <tr><td>停損 (出場)</td><td class="n dn"><b>${p.stop}</b> (${long?'-':'+'}${p.risk_pct}%)</td></tr>
    <tr><td>目標一 / 二 (停利)</td><td class="n up"><b>${p.target1}</b> / ${p.target2} (${long?'+':'-'}${p.reward_pct}%)</td></tr>
-   <tr><td>風報比</td><td class="n"><b class="${p.rr>=1.5?'up':'dn'}">${p.rr}</b></td></tr></table>
-   ${o&&!p.note?`<div class="row" style="margin-top:10px"><button class="b ${long?'red':'grn'}" onclick='mkOrder(${JSON.stringify({code:o.code,mode:o.mode,side,action:"open",price:o.close,stop:p.stop,target:p.target1,target2:p.target2,reason:o.reason+" "+(p.horizon||"")})})'>依此計畫建立委託 (${long?'買進':'賣出'})</button></div>`:''}</div>`;
+   <tr><td>風報比</td><td class="n">${p.rr_text?`<b class="dn">${esc(p.rr_text)}</b>`:`<b class="${p.rr>=1.5?'up':'dn'}">${p.rr}</b>`}</td></tr>
+   ${p.trail?`<tr><td>移動停利</td><td class="n">${esc(p.trail)}</td></tr>`:''}</table>
+   ${p.why&&p.why.length?`<ul class="why">${p.why.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>`:''}
+   ${o&&!p.note&&!p.no_room?`<div class="row" style="margin-top:10px"><button class="b ${long?'red':'grn'}" onclick='mkOrder(${JSON.stringify({code:o.code,mode:o.mode,side,action:"open",price:long?Math.min(o.close,e1):Math.max(o.close,e0),stop:p.stop,target:p.target1,target2:p.target2,reason:o.reason+" "+(p.horizon||"")})})'>依此計畫建立委託 (${long?'買進':'賣出'})</button></div>`:''}</div>`;
 }
 function flowBlock(f){
   if(!f)return '';
@@ -405,7 +426,7 @@ function flowBlock(f){
 }
 function baseBlock(b){
   if(!b)return '';
-  if(b.stage==='不在整理')return `<div class="card"><h3 style="margin-top:0">整理型態 <span class="mut" style="font-size:14px">不在整理</span></h3><p class="mut">${esc((b.why||[]).join('；'))}</p></div>`;
+  if(!b.box_high)return `<div class="card"><h3 style="margin-top:0">整理型態 <span class="mut" style="font-size:14px">${esc(b.stage)}</span></h3><p class="mut">${esc((b.why||[]).join('；'))}</p></div>`;
   const st=b.stage, c=st.includes('已啟動')?'up':st.startsWith('跌破')?'dn':st.startsWith('整理完成')?'up':'';
   const h=b.history, hi=h&&h.high, al=h&&h.all;
   return `<div class="card"><h3 style="margin-top:0">整理型態：<span class="${c}">${esc(st)}</span></h3>
@@ -445,7 +466,7 @@ window.swc=(id,k,btn)=>{CSEL.ana=k;btn.parentNode.querySelectorAll('button').for
 function renderAnalysis(a){
   const max=a.mode==='daytrade'?12:16;const pct=Math.min(100,Math.abs(a.total)/max*100);
   let h=`<div class="card"><div class="row" style="justify-content:space-between">
-   <div><div class="big">${esc(a.code)} ${esc(a.name)} <span class="mut" style="font-size:14px">${a.market} · ${a.mode==='daytrade'?'當沖':'波段'} · 資料 ${a.time}</span></div>
+   <div><div class="big">${esc(a.code)} ${esc(a.name)} <button class="b sec" style="padding:3px 10px;font-size:13px" onclick="wlToggle('${a.code}',this)">${WL.some(x=>x.code===a.code)?'★ 已在自選':'☆ 加入自選'}</button> <span class="mut" style="font-size:14px">${a.market} · ${a.mode==='daytrade'?'當沖':'波段'} · 資料 ${a.time}</span></div>
    <div style="font-size:18px;margin-top:4px">現價 <b>${fmt(a.close)}</b>${a.vwap?` · VWAP ${a.vwap}`:''}</div></div>
    <div style="text-align:right"><div class="tone ${cls(a.total)}">${esc(a.tone)} ${sgn(a.total)} 分</div><div style="margin-top:4px">${esc(a.advice)}</div></div></div>
    <div class="bar" style="margin-top:10px"><i style="width:${pct}%;background:${a.total>=0?'var(--up)':'var(--dn)'}"></i></div>
@@ -511,20 +532,20 @@ async function runLevels(q,silent){
 // ---------- 掃描
 $('#s-go').onclick=()=>busy($('#s-go'),$('#s-out'),async()=>{
   $('#s-out').innerHTML='<div class="card mut">掃描中，請稍候…</div>';
-  const r=await api(`/api/scan?mode=${$('#s-mode').value}&direction=${$('#s-dir').value}&top=${$('#s-top').value}`);
+  const r=await api(`/api/scan?mode=${$('#s-mode').value}&direction=${$('#s-dir').value}&top=${$('#s-top').value}&scope=${$('#s-scope').value}`);
   const b=r.budget;
   $('#s-out').innerHTML=`<div class="card"><p class="mut">掃描 ${r.scanned} 檔 · 通過條件 ${r.passed} 檔 · ${r.mode==='daytrade'?'當沖':'波段'}可用額度 <b>${fmt(b.available,0)}</b> 元${r.skipped_budget?` · ${r.skipped_budget} 檔因額度買不起 1 張已排除 (零股不能當沖)`:''}</p>
    <table><tr><th>標的</th><th class="n">現價</th><th class="n">分數</th><th>判斷</th><th>計畫</th><th>建議數量</th><th></th></tr>
    ${r.results.map(x=>`<tr><td><b>${x.code}</b> ${esc(x.name)}<div class="mut" style="font-size:12px">${x.top_reasons.slice(0,3).map(esc).join('<br>')}</div></td>
      <td class="n">${fmt(x.close)}</td><td class="n ${cls(x.total)}"><b>${sgn(x.total)}</b></td><td>${esc(x.tone)}<div class="mut" style="font-size:12px">${Object.entries(x.by_cat).map(([k,v])=>k+' '+sgn(v)).join(' · ')}</div></td>
-     <td style="font-size:13px">${x.plan.side} ${x.plan.entry_zone.join('~')}<br>停損 ${x.plan.stop} · 目標 ${x.plan.target1}<br>風報比 ${x.plan.rr}</td>
+     ${x.plan.rr_text?esc(x.plan.rr_text):'風報比 '+x.plan.rr}</td>
      <td style="font-size:13px">${x.size.shares?(x.size.lots?x.size.lots+' 張':x.size.shares+' 股(零股)'):'<span class=dn>額度不足</span>'}<br><span class="mut">約 ${fmt(x.size.amount,0)} 元</span></td>
      <td><button class="b sec" onclick="showCode('${x.code}','${r.mode}')">詳細</button>
      ${!x.actionable?'<div class="mut" style="font-size:12px;margin-top:4px">未達進場條件<br>(觀察)</div>':''}
      ${x.size.shares&&x.actionable?`<button class="b ${x.side==='buy'?'red':'grn'}" style="margin-top:4px" onclick='mkOrder(${JSON.stringify({code:x.code,mode:r.mode,side:x.side,action:"open",price:x.close,stop:x.plan.stop,target:x.plan.target1,target2:x.plan.target2,reason:"掃描 "+x.tone+" "+x.total+"分"})})'>下單</button>`:''}</td></tr>`).join('')}
    </table></div>`;
 });
-window.showCode=(c,m)=>{$('#a-code').value=c;$('#a-mode').value=m;document.querySelector('#nav button[data-t=ana]').click();$('#a-go').click()};
+window.showCode=(c,m,entry,side)=>{$('#a-code').value=c;$('#a-mode').value=m;$('#a-entry').value=entry!=null&&!isNaN(entry)?entry:'';$('#a-side').value=side||'long';document.querySelector('#nav button[data-t=ana]').click();$('#a-go').click()};
 
 // ---------- 下單
 let LAST_REQ=null,ACCS=[];
@@ -541,9 +562,9 @@ function showTicket(t){
    <tr><td>股票</td><td><b>${t.code} ${esc(t.name)}</b></td></tr>
    <tr><td>類別</td><td>${t.mode_name} · ${t.action==='open'?'新倉':'平倉'} · ${t.trade_type}</td></tr>
    <tr><td>買賣</td><td><b class="${t.side==='buy'?'up':'dn'}">${t.side==='buy'?'買進':'賣出'}</b></td></tr>
-   <tr><td>價格</td><td><b>${t.price}</b> (限價)</td></tr>
-   <tr><td>數量</td><td><b>${t.lots?t.lots+' 張':''}${t.odd?' '+t.odd+' 股':''}</b> (${fmt(t.shares,0)} 股)</td></tr>
-   <tr><td>金額</td><td>${fmt(t.amount,0)} 元</td></tr>
+   <tr><td>價格</td><td><input id="tk-price" type="number" step="0.01" min="0" value="${t.price}" style="width:110px" oninput="tkEdit()"> (限價)</td></tr>
+   <tr><td>數量</td><td><input id="tk-shares" type="number" step="1" min="1" value="${t.shares}" style="width:110px" oninput="tkEdit()"> 股 <span class="mut" id="tk-lots">${t.lots?t.lots+' 張':''}${t.odd?' '+t.odd+' 股':''}</span></td></tr>
+   <tr><td>金額</td><td><b id="tk-amt">${fmt(t.amount,0)}</b> 元</td></tr>
    ${t.stop?`<tr><td>停損 / 目標</td><td>${t.stop} / ${t.target??'-'}</td></tr>`:''}
    ${t.reason?`<tr><td>理由</td><td>${esc(t.reason)}</td></tr>`:''}</table>
    ${t.sizing?`<div class="mut" style="margin:8px 0;font-size:13px">${t.sizing.note.map(esc).join('<br>')}<br>停損時預估虧損約 ${fmt(t.sizing.max_loss,0)} 元</div>`:''}
@@ -554,6 +575,27 @@ function showTicket(t){
   $('#modal').classList.remove('hide');
 }
 window.closeTicket=id=>{api('/api/order/cancel',{id});$('#modal').classList.add('hide')};
+// 委託單改價格 / 數量：金額即時更新，停止輸入 0.6 秒後重新試算 (檢查升降單位、額度、漲跌停)
+let TK_TIMER=null;
+window.tkEdit=()=>{
+  const px=+$('#tk-price').value, sh=Math.floor(+$('#tk-shares').value);
+  $('#tk-amt').textContent=px>0&&sh>0?fmt(px*sh,0):'-';
+  $('#tk-lots').textContent=sh>0?(Math.floor(sh/1000)?Math.floor(sh/1000)+' 張':'')+(sh%1000?' '+sh%1000+' 股':''):'';
+  $('#cf-btn').disabled=true;
+  clearTimeout(TK_TIMER);
+  if(!(px>0&&sh>0))return;
+  TK_TIMER=setTimeout(async()=>{
+    const old=LAST_TICKET;
+    try{
+      LAST_REQ={...LAST_REQ,price:px,shares:sh,account:old.account};
+      const t=await api('/api/order/preview',LAST_REQ);
+      api('/api/order/cancel',{id:old.id});
+      const f=document.activeElement&&document.activeElement.id;
+      showTicket(t);
+      if(f&&$('#'+f)){const el=$('#'+f);el.focus();const v=el.value;el.value='';el.value=v}
+    }catch(e){$('#cf-msg').innerHTML=`<div class="err">✖ ${esc(e.message)}</div>`}
+  },600);
+};
 window.confirmTicket=id=>busy($('#cf-btn'),$('#cf-msg'),async()=>{
   const acc=ACCS.find(a=>a.id===(LAST_TICKET&&LAST_TICKET.account));
   if(acc&&acc.submit_mode==='manual')$('#cf-msg').innerHTML=`<div class="note">⏳ 已在 ${esc(acc.name)} 頁面填好單，請到 ${esc(acc.name)} 的 Edge 視窗看確認內容，按「確定 (Y)」送出 (120 秒內)…</div>`;
@@ -573,9 +615,21 @@ function posRows(){
     const pnl=px?Math.round((px-p.avg_price)*p.qty*sign):null;const pct=px?((px/p.avg_price-1)*100*sign):null;if(pnl)unreal+=pnl;
     return `<tr><td>${p.code} ${esc(p.name)}</td><td>${esc(p.account_name||'模擬下單')}</td><td>${p.mode==='daytrade'?'當沖':'波段'}</td><td>${p.side==='long'?'多':'空'}</td><td class="n">${fmt(p.qty,0)}</td><td class="n">${p.avg_price}</td>
      <td class="n"><b>${px??'-'}</b></td><td class="n ${cls(pnl)}"><b>${pnl!=null?fmt(pnl,0):'-'}</b> ${pct!=null?`(${pc(pct)}%)`:''}</td><td class="n">${p.stop??'-'}</td><td class="n">${p.target??'-'}</td>
-     <td><button class="b sec" onclick="showCode('${p.code}','${p.mode}')">出場判斷</button> <button class="b sec" onclick='mkOrder(${JSON.stringify({code:p.code,mode:p.mode,action:"close",side:p.side==="long"?"sell":"buy",price:px||p.avg_price,shares:p.qty,account:p.account})})'>平倉</button></td></tr>`}).join('');
-  return r.positions.length?`<table><tr><th>股票</th><th>帳戶</th><th>類別</th><th>方向</th><th class="n">股數</th><th class="n">均價</th><th class="n">現價</th><th class="n">未實現損益</th><th class="n">停損</th><th class="n">目標</th><th></th></tr>${rows}</table>
-   <p>未實現損益合計 <b class="${cls(unreal)}">${fmt(unreal,0)}</b> 元</p>`:'<p class="mut">沒有持倉</p>';
+     <td><button class="b sec" onclick="showCode('${p.code}','${p.mode}',${p.avg_price},'${p.side}')">出場判斷</button> <button class="b sec" onclick='mkOrder(${JSON.stringify({code:p.code,mode:p.mode,action:"close",side:p.side==="long"?"sell":"buy",price:px||p.avg_price,shares:p.qty,account:p.account})})'>平倉</button></td></tr>`}).join('');
+  const cashLine=Object.values(r.holdings||{}).filter(Boolean).map(ac=>`<span class="tag" style="font-size:13px">${esc(ac.cash_name||'帳戶')}餘額 <b>${ac.cash!=null?fmt(ac.cash,0):'-'}</b> · 交割中 <b class="${cls(ac.pending)}">${(ac.pending||0)>0?'+':''}${fmt(ac.pending||0,0)}</b>${ac.cash!=null?` · 入帳後 <b>${fmt(ac.cash+(ac.pending||0),0)}</b>`:''}</span>`).join(' ');
+  return (cashLine?`<div style="margin-bottom:8px">${cashLine}</div>`:'')+(r.positions.length?`<table><tr><th>股票</th><th>帳戶</th><th>類別</th><th>方向</th><th class="n">股數</th><th class="n">均價</th><th class="n">現價</th><th class="n">未實現損益</th><th class="n">停損</th><th class="n">目標</th><th></th></tr>${rows}</table>
+   <p>未實現損益合計 <b class="${cls(unreal)}">${fmt(unreal,0)}</b> 元</p>`:'<p class="mut">沒有持倉</p>');
+}
+// 交割款明細：已入帳 / 交割中，並算出每個交割日之後的分戶帳餘額
+function settleBlock(ac){
+  const ss=(ac.settlements||[]).slice().sort((a,b)=>a.settle_date.localeCompare(b.settle_date)||a.trade_date.localeCompare(b.trade_date));
+  if(!ss.length)return '<p class="mut" style="font-size:13px">近期沒有交割款</p>';
+  let bal=ac.cash??0;
+  const rows=ss.map(x=>{let after='';if(x.pending&&ac.cash!=null){bal+=x.amount;after=fmt(bal,0)}
+    return `<tr><td>${esc(x.trade_date)}</td><td>${esc(x.settle_date)}</td><td class="n ${cls(x.amount)}"><b>${x.amount>0?'+':''}${fmt(x.amount,0)}</b> <span class="mut" style="font-size:12px">${x.amount>0?'收':'付'}</span></td>
+      <td>${x.pending?'<span class="tag" style="background:#fff3cd;color:#8a6d00">交割中</span>':'<span class="mut">已入帳</span>'}</td><td class="n">${after}</td></tr>`}).join('');
+  return `<div style="margin:0 0 10px"><b>交割款明細</b> <span class="mut" style="font-size:12px">交割中淨額 <b class="${cls(ac.pending)}">${(ac.pending||0)>0?'+':''}${fmt(ac.pending||0,0)}</b>${ac.cash!=null?` · 全部入帳後${esc(ac.cash_name||'帳戶')}餘額 <b>${fmt(ac.cash+(ac.pending||0),0)}</b>`:''}</span>
+    <table style="margin-top:4px"><tr><th>成交日</th><th>交割日</th><th class="n">淨收付</th><th>狀態</th><th class="n">入帳後餘額</th></tr>${rows}</table></div>`;
 }
 function renderPosPrices(){if(LEDGER&&!$('#t-ord').classList.contains('hide'))setHTML('#o-pos',posRows())}
 async function loadLedger(){
@@ -590,8 +644,12 @@ async function loadLedger(){
       <div class="card" style="margin:0;padding:10px 14px"><div class="mut">未實現損益 <span style="font-size:11px">(${esc(ac.unrealized_source||'')})</span></div><div class="big ${cls(ac.unrealized)}">${ac.unrealized>0?'+':''}${fmt(ac.unrealized,0)}</div><div class="mut" style="font-size:12px">${cost?`付出成本 ${fmt(cost,0)} · 報酬率 ${pc(ac.unrealized/cost*100)}%`:''}</div></div>
       <div class="card" style="margin:0;padding:10px 14px"><div class="mut">持有檔數</div><div class="big">${ac.holdings.length}</div></div>
       <div class="card" style="margin:0;padding:10px 14px"><div class="mut">${esc(ac.cash_name||'帳戶')}餘額</div><div class="big">${ac.cash!=null?fmt(ac.cash,0):'-'}</div></div>
-     </div>`:'')+
-    (ac&&ac.holdings.length?`<table><tr><th>股票</th><th class="n">股數</th><th class="n">買進均價</th><th class="n">損益平衡價</th><th class="n">現價</th><th class="n">市值</th><th class="n">損益</th><th class="n">獲利率</th><th></th></tr>${ac.holdings.map(h=>`<tr><td>${h.code} ${esc(h.name)}${h.type&&h.type!=='現股'?` <span class="tag">${esc(h.type)}</span>`:''}</td><td class="n">${fmt(h.qty,0)}</td><td class="n"><b>${h.buy_avg??'-'}</b>${h.cost?`<div class="mut" style="font-size:11px">成本 ${fmt(h.cost,0)}</div>`:''}</td><td class="n">${h.avg_cost??'-'}</td><td class="n">${h.price??'-'}</td><td class="n">${h.market_value!=null?fmt(h.market_value,0):'-'}</td><td class="n ${cls(h.pnl)}">${h.pnl!=null?fmt(h.pnl,0):'-'}</td><td class="n ${cls(h.pnl)}">${esc(h.pnl_pct||'')}</td><td><button class="b sec" onclick="showCode('${h.code}','swing')">分析</button></td></tr>`).join('')}</table>`:ac?'<p class="mut">庫存為空</p>':'')}).join(''):'<p class="mut">尚未新增券商帳戶，請到「券商帳戶」頁新增</p>';
+      <div class="card" style="margin:0;padding:10px 14px"><div class="mut">交割中 (未入帳)</div><div class="big ${cls(ac.pending)}">${ac.pending!=null?(ac.pending>0?'+':'')+fmt(ac.pending,0):'-'}</div>
+        <div class="mut" style="font-size:12px">${(ac.settlements||[]).filter(x=>x.pending).map(x=>`${x.settle_date.slice(5)} ${x.amount>0?'+':''}${fmt(x.amount,0)}`).join(' · ')}</div></div>
+      <div class="card" style="margin:0;padding:10px 14px"><div class="mut">總資產 / 持股比例</div><div class="big">${fmt((ac.market_value||0)+(ac.cash||0)+(ac.pending||0),0)}</div>
+        <div class="mut" style="font-size:12px">持股 ${((ac.market_value||0)/Math.max((ac.market_value||0)+(ac.cash||0)+(ac.pending||0),1)*100).toFixed(1)}%</div></div>
+     </div>`+settleBlock(ac):'')+
+    (ac&&ac.holdings.length?`<table><tr><th>股票</th><th class="n">股數</th><th class="n">買進均價</th><th class="n">損益平衡價</th><th class="n">現價</th><th class="n">市值</th><th class="n">損益</th><th class="n">獲利率</th><th></th></tr>${ac.holdings.map(h=>`<tr><td>${h.code} ${esc(h.name)}${h.type&&h.type!=='現股'?` <span class="tag">${esc(h.type)}</span>`:''}</td><td class="n">${fmt(h.qty,0)}</td><td class="n"><b>${h.buy_avg??'-'}</b>${h.cost?`<div class="mut" style="font-size:11px">成本 ${fmt(h.cost,0)}</div>`:''}</td><td class="n">${h.avg_cost??'-'}</td><td class="n">${h.price??'-'}</td><td class="n">${h.market_value!=null?fmt(h.market_value,0):'-'}</td><td class="n ${cls(h.pnl)}">${h.pnl!=null?fmt(h.pnl,0):'-'}</td><td class="n ${cls(h.pnl)}">${esc(h.pnl_pct||'')}</td><td><button class="b sec" onclick="showCode('${h.code}','swing',${h.buy_avg??h.avg_cost??'null'})">分析</button></td></tr>`).join('')}</table>`:ac?'<p class="mut">庫存為空</p>':'')}).join(''):'<p class="mut">尚未新增券商帳戶，請到「券商帳戶」頁新增</p>';
   $('#o-his').innerHTML=r.orders.length?`<table><tr><th>時間</th><th>股票</th><th>帳戶</th><th>動作</th><th class="n">價格</th><th class="n">股數</th><th>結果</th><th class="n">損益</th></tr>${r.orders.map(o=>`<tr><td>${o.time.replace('T',' ').slice(0,16)}</td><td>${o.code} ${esc(o.name)}</td><td>${esc(o.account_name||'模擬下單')}</td><td>${o.mode_name} ${o.action==='open'?'新倉':'平倉'} ${o.side==='buy'?'買':'賣'}</td><td class="n">${o.price}</td><td class="n">${fmt(o.shares,0)}</td><td>${esc(o.result?.status)}</td><td class="n ${cls(o.pnl)}">${o.pnl?fmt(o.pnl,0):''}</td></tr>`).join('')}</table>
    <p class="mut">今日已實現損益 (未扣手續費稅)：<b class="${cls(r.status.realized_today)}">${fmt(r.status.realized_today,0)}</b> 元</p>`:'<p class="mut">尚無委託</p>';
 }
@@ -665,6 +723,77 @@ $('#st-save').onclick=()=>busy($('#st-save'),$('#st-msg'),async()=>{
     allow_odd_lot:$('#st-odd').value==='true'});
   $('#st-msg').innerHTML='<div class="note">✔ 已儲存</div>';loadSettings();loadHeader();
 });
+// ---------- 自選清單
+var WL=[],WL_EVAL={};
+function wlDatalist(){$('#wl-dl').innerHTML=WL.map(x=>`<option value="${x.code}">${esc(x.name)}${x.note?' · '+esc(x.note):''}</option>`).join('')}
+async function loadWl(withEval){
+  try{WL=(await api('/api/watchlist')).items;wlDatalist();renderWl();connectStream();
+    if(withEval&&WL.length)evalWl();}catch(e){$('#wl-out').innerHTML=`<div class="err">${esc(e.message)}</div>`}
+}
+async function evalWl(){
+  $('#wl-eval').disabled=true;$('#wl-info').textContent='評估中 (日K 批次下載，約 5~15 秒)…';
+  try{const r=await api('/api/watchlist/eval');WL_EVAL={};r.items.forEach(x=>WL_EVAL[x.code]=x);renderWl();
+    $('#wl-info').textContent='評估時間 '+new Date().toLocaleTimeString('zh-TW',{hour12:false})+' · 現價即時推送';}
+  catch(e){$('#wl-info').textContent='評估失敗：'+e.message}finally{$('#wl-eval').disabled=false}
+}
+function wlPrice(x){
+  const q=LIVE?.quotes?.[x.code];const ev=WL_EVAL[x.code];
+  const px=q?.price??ev?.close;const pc0=q?.prev_close;
+  const chg=px&&pc0?px-pc0:null;
+  return `<b class="${cls(chg)}">${px!=null?fmt(px):'-'}</b>${chg!=null?`<div class="${cls(chg)}" style="font-size:12px">${sgn(chg)} (${pc(chg/pc0*100)}%)</div>`:''}`;
+}
+function renderWlPrices(){if($('#t-wl').classList.contains('hide'))return;WL.forEach(x=>{const el=document.getElementById('wlp-'+x.code);if(el){const h=wlPrice(x);if(el.innerHTML!==h){el.innerHTML=h;flash(el)}}})}
+function renderWl(){
+  if(!WL.length){$('#wl-out').innerHTML='<p class="mut">自選清單是空的。在上面輸入代號按「加入自選」，或在個股分析頁按「☆ 加入自選」。</p>';return}
+  $('#wl-out').innerHTML=`<table><tr><th>股票</th><th class="n">現價</th><th class="n">波段分數</th><th>整理型態</th><th class="n">最近支撐</th><th class="n">最近壓力</th><th>備註</th><th></th></tr>
+   ${WL.map((x,i)=>{const e=WL_EVAL[x.code]||{};const b=e.base||{};
+     const bc=(b.stage||'').includes('已啟動')||(b.stage||'').startsWith('整理完成，準備')?'up':(b.stage||'').startsWith('跌破')?'dn':'mut';
+     return `<tr><td><b>${x.code}</b> ${esc(x.name)}<div class="mut" style="font-size:12px">${esc(e.state||'')}</div></td>
+     <td class="n" id="wlp-${x.code}">${wlPrice(x)}</td>
+     <td class="n">${e.score!=null?`<b class="${cls(e.score)}">${sgn(e.score)}</b><div style="font-size:12px" class="${cls(e.score)}">${esc(e.tone)}</div>`:(e.error?`<span class="dn" style="font-size:12px">${esc(e.error)}</span>`:'-')}</td>
+     <td style="font-size:13px"><span class="${bc}">${esc(b.stage||'-')}</span>${b.score?` <span class="mut">${b.score}</span>`:''}${b.trigger&&b.box_high?`<div class="mut" style="font-size:12px">箱 ${b.box_low}~${b.box_high} · 觸發 ${b.trigger}</div>`:''}</td>
+     <td class="n">${e.support?`${e.support.price}<div class="mut" style="font-size:12px">${e.support.dist_pct}%</div>`:'-'}</td>
+     <td class="n">${e.resistance?`${e.resistance.price}<div class="mut" style="font-size:12px">+${e.resistance.dist_pct}%</div>`:'-'}</td>
+     <td><input value="${esc(x.note||'')}" placeholder="備註" style="width:150px" onchange="wlEdit('note','${x.code}',this.value)"></td>
+     <td><div class="row" style="gap:4px;flex-wrap:nowrap">
+       <button class="b sec" onclick="showCode('${x.code}','swing')">波段</button>
+       <button class="b sec" onclick="showCode('${x.code}','daytrade')">當沖</button>
+       <button class="b sec" onclick="showLv('${x.code}')">支撐壓力</button>
+       <button class="b sec" title="上移" onclick="wlEdit('up','${x.code}')">↑</button>
+       <button class="b sec" title="下移" onclick="wlEdit('down','${x.code}')">↓</button>
+       <button class="b sec" title="刪除" onclick="wlEdit('remove','${x.code}')">✕</button></div></td></tr>`}).join('')}</table>`;
+}
+window.wlEdit=async(action,code,note)=>{
+  try{WL=(await api('/api/watchlist',{action,code,note})).items;wlDatalist();renderWl();connectStream();
+    if(action==='add')evalWl();}catch(e){alert(e.message)}
+};
+window.wlToggle=async(code,btn)=>{
+  const has=WL.some(x=>x.code===code);await wlEdit(has?'remove':'add',code);
+  if(btn)btn.textContent=WL.some(x=>x.code===code)?'★ 已在自選':'☆ 加入自選';
+};
+window.showLv=c=>{$('#l-code').value=c;if($('#l-tf').value==='60m')$('#l-tf').value='1d';document.querySelector('#nav button[data-t=lv]').click();$('#l-go').click()};
+$('#wl-add').onclick=()=>{const c=$('#wl-code').value.trim();if(!c)return;wlEdit('add',c,$('#wl-note').value.trim());$('#wl-code').value='';$('#wl-note').value=''};
+$('#wl-code').addEventListener('keydown',e=>{if(e.key==='Enter')$('#wl-add').click()});
+$('#wl-eval').onclick=evalWl;
+setInterval(()=>{if(!$('#t-wl').classList.contains('hide')&&WL.length&&!$('#wl-eval').disabled)evalWl()},60000);
+loadWl(false);
+
+// ---------- 你的倉位 (股票市值 / 現金 / 交割中) vs 建議持股比例
+function posBlock(p){
+  if(!p)return '';
+  const ac={'減碼':'#e53935','可加碼':'#2e7d32','維持':'#1e6fd9'}[p.act]||'#555';
+  return `<div class="card" style="margin:12px 0 0;border-color:${ac}">
+   <div class="row" style="justify-content:space-between"><b>你的倉位 <span class="mut" style="font-weight:normal;font-size:13px">(${esc(p.accounts.join('、'))})</span></b>
+     <b style="color:${ac};font-size:17px">${esc(p.act)}${p.amount?` 約 ${fmt(p.amount,0)} 元`:''}</b></div>
+   <div style="position:relative;height:22px;background:var(--bg);border-radius:6px;margin:10px 0 4px;overflow:hidden">
+     <div style="position:absolute;left:${p.target_lo}%;width:${p.target_hi-p.target_lo}%;top:0;bottom:0;background:rgba(46,125,50,.22)"></div>
+     <div style="position:absolute;left:0;width:${Math.min(p.exposure,100)}%;top:6px;height:10px;background:${ac};border-radius:4px"></div>
+     <div style="position:absolute;left:calc(${Math.min(p.exposure,100)}% - 1px);top:0;bottom:0;width:2px;background:#111"></div></div>
+   <div class="row mut" style="justify-content:space-between;font-size:12px"><span>0%</span><span>綠色 = 這個風險等級建議持股 ${p.target_lo}~${p.target_hi}%</span><span>100%</span></div>
+   <div style="margin-top:6px">${esc(p.advice)}</div>
+   <table style="margin-top:6px"><tr><td>股票市值</td><td class="n">${fmt(p.market_value,0)}</td><td>分戶帳現金</td><td class="n">${fmt(p.cash,0)}</td>
+     <td>交割中 (未入帳)</td><td class="n ${cls(p.pending)}">${p.pending>0?'+':''}${fmt(p.pending,0)}</td><td>總資產</td><td class="n"><b>${fmt(p.equity,0)}</b></td><td>持股比例</td><td class="n"><b>${p.exposure}%</b></td></tr></table></div>`;
+}
 // ---------- 大盤回測風險 / 減碼建議
 function renderRisk(r){
   const rc=r.risk>=65?'dn':r.risk>=50?'dn':r.risk>=35?'':'up';
@@ -688,8 +817,9 @@ function renderRisk(r){
     <div style="text-align:right"><div class="mut">回測風險</div>
       <div style="font-size:34px;font-weight:bold;color:${lvColor}">${r.risk} <span style="font-size:18px">/ 100 · ${esc(r.level)}</span></div>
       <div style="font-size:17px"><b>${esc(r.action)}</b></div>
-      ${r.portfolio&&r.portfolio.cut_amount?`<div style="color:#e53935">你的庫存市值 ${fmt(r.portfolio.market_value,0)} → 建議減碼約 <b>${fmt(r.portfolio.cut_amount,0)}</b> 元</div>`:r.portfolio?`<div class="mut">你的庫存市值 ${fmt(r.portfolio.market_value,0)}，目前不需要減碼</div>`:''}</div></div>
+      ${r.portfolio?'':`<div class="mut" style="font-size:13px">(尚未同步券商帳務，以下是一般建議；同步後會依你的持股比例給建議)</div>`}</div></div>
     <div class="bar" style="margin-top:10px;height:14px"><i style="width:${r.risk}%;background:${lvColor}"></i></div>
+    ${posBlock(r.portfolio)}
     ${r.notes.map(n=>`<div class="note" style="font-size:13px">${esc(n)}</div>`).join('')}</div>
   <div class="grid">
     <div class="card" style="margin:0"><div class="mut">5 天內回檔 ≥ 2%</div><div style="font-size:20px">${cmp(a.dd2_5d,b.dd2_5d)}</div></div>

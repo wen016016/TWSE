@@ -13,8 +13,9 @@ import pandas as pd
 
 from . import data
 from .chart import plot
-from .indicators import add_indicators, add_vwap, crossed_down, crossed_up, round_tick, tick
-from .levels import clean, compute_levels, find_pivots, merge_for_plan, sessions
+from .indicators import add_indicators, add_vwap, crossed_down, crossed_up, round_tick
+from .box import make_plan
+from .levels import clean, compute_levels, find_pivots, sessions
 
 
 class Score:
@@ -323,68 +324,6 @@ def market_view(intraday=False) -> tuple[Score, dict]:
 
 
 # =================================================================== 計畫
-def plan_long(close, atr, lv, max_stop=0.08, min_stop=0.0, max_t_atr=None, cap=None):
-    """max_t_atr：目標超過幾倍 ATR 就改用 ATR 推估 (短線用)；cap：價格上限 (當沖 = 漲停價)"""
-    sup = [s["price"] for s in lv["supports"]]
-    res = [r["price"] for r in lv["resistances"] if r["price"] - close >= 0.7 * atr]  # 太近的壓力不當目標
-    bull = lv["key"].get("bull", {}).get("price")
-    base = sup[0] if sup else close - 2 * atr
-    if bull and bull < close and bull > base - atr:
-        base = min(base, bull)
-    stop = base - 0.3 * atr
-    stop = max(stop, close * (1 - max_stop))
-    if min_stop:
-        stop = min(stop, close * (1 - min_stop))
-    t1 = res[0] if res else close + 2 * atr
-    t2 = res[1] if len(res) > 1 else max(t1 + atr, close + 3.5 * atr)
-    if max_t_atr and t1 - close > max_t_atr * atr:
-        t1, t2 = close + 2 * atr, min(t1, close + 3.5 * atr)
-    note = None
-    if cap:
-        if close >= cap:
-            note = f"已漲停 {cap}，不追價"
-        t1, t2 = min(t1, cap), min(t2, cap)
-    buy_lo = sup[0] if sup and sup[0] > close - 1.2 * atr else close - 0.5 * atr
-    rr = (t1 - close) / (close - stop) if close > stop else 0
-    near_res = lv["resistances"][0]["price"] if lv["resistances"] else None
-    brk = round_tick(near_res + tick(near_res), "up") if near_res else None
-    if brk and cap and brk > cap:
-        brk = None
-    return {"side": "做多", "entry_zone": [round_tick(buy_lo, "up"), round_tick(close)], "breakout": brk,
-            "stop": round_tick(stop, "down"), "target1": round_tick(t1), "target2": round_tick(t2),
-            "risk_pct": round((1 - stop / close) * 100, 2), "reward_pct": round((t1 / close - 1) * 100, 2),
-            "rr": round(rr, 2), "note": note}
-
-
-def plan_short(close, atr, lv, max_stop=0.08, min_stop=0.0, max_t_atr=None, cap=None):
-    """cap：價格下限 (當沖 = 跌停價)"""
-    sup = [s["price"] for s in lv["supports"] if close - s["price"] >= 0.7 * atr]
-    res = [r["price"] for r in lv["resistances"]]
-    base = res[0] if res else close + 2 * atr
-    stop = min(base + 0.3 * atr, close * (1 + max_stop))
-    if min_stop:
-        stop = max(stop, close * (1 + min_stop))
-    t1 = sup[0] if sup else close - 2 * atr
-    t2 = sup[1] if len(sup) > 1 else min(t1 - atr, close - 3.5 * atr)
-    if max_t_atr and close - t1 > max_t_atr * atr:
-        t1, t2 = close - 2 * atr, max(t1, close - 3.5 * atr)
-    note = None
-    if cap:
-        if close <= cap:
-            note = f"已跌停 {cap}，不追空"
-        t1, t2 = max(t1, cap), max(t2, cap)
-    sell_hi = res[0] if res and res[0] < close + 1.2 * atr else close + 0.5 * atr
-    rr = (close - t1) / (stop - close) if stop > close else 0
-    near_sup = lv["supports"][0]["price"] if lv["supports"] else None
-    brk = round_tick(near_sup - tick(near_sup), "down") if near_sup else None
-    if brk and cap and brk < cap:
-        brk = None
-    return {"side": "做空", "entry_zone": [round_tick(close), round_tick(sell_hi, "down")], "breakout": brk,
-            "stop": round_tick(stop, "up"), "target1": round_tick(t1), "target2": round_tick(t2),
-            "risk_pct": round((stop / close - 1) * 100, 2), "reward_pct": round((1 - t1 / close) * 100, 2),
-            "rr": round(rr, 2), "note": note}
-
-
 def verdict(total, strong=6, mild=3):
     if total >= strong:
         return "強烈偏多", "適合進場做多"
@@ -404,6 +343,27 @@ def exit_check(close, entry, side, plan, lv, d, mode):
     bull = lv["key"].get("bull", {}).get("price")
     bear = lv["key"].get("bear", {}).get("price")
     r = d.iloc[-1]
+    if plan and plan.get("regime"):
+        sig.append(("盤勢", f"{plan['regime']}" + (f"，箱型 {plan['box']['box_low']} ~ {plan['box']['box_high']}" if plan.get("box") else "")))
+        if side == "long" and plan["side"] == "做多":
+            if close <= plan["stop"]:
+                sig.append(("出場", f"收盤 {close} 跌破停損 {plan['stop']}"))
+            elif close >= plan["target1"]:
+                sig.append(("停利", f"已到目標一 {plan['target1']}，可先分批停利"))
+            if plan.get("trail") and plan["regime"].startswith("情況 B"):
+                sig.append(("提醒", plan["trail"]))
+        et = plan.get("exit_trail") or {}
+        in_profit = (close > entry) if side == "long" else (close < entry)
+        if in_profit and et.get(side):
+            hor = plan.get("horizon", "")
+            mf, ms = et.get("ma_fast"), et.get("ma_slow")
+            broke = [f"{n} {v}" for n, v in zip(et["names"], (mf, ms)) if v is not None and
+                     ((side == "long" and close < v) or (side == "short" and close > v))]
+            if broke:
+                sig.append(("減碼", f"{hor}移動停利觸發：收盤 {close} 已{'跌破' if side == 'long' else '站回'} {'、'.join(broke)}，獲利了結"))
+            else:
+                sig.append(("移動停利", f"{hor}已獲利 (現價 {close} {'>' if side == 'long' else '<'} 成本 {entry})：{et[side]}"))
+        sig.append(("成本", f"你的成本 {entry}：" + ("目前停損 " + str(plan["stop"]) + (" 已高於成本，獲利有保護" if plan["stop"] >= entry and side == "long" else " 低於成本，最大虧損 " + f"{(plan['stop'] / entry - 1) * 100:.1f}%"))))
     if side == "long":
         if bull and close < bull:
             sig.append(("出場", f"跌破多方關鍵價 {bull}"))
@@ -451,19 +411,58 @@ def _swing_levels(d, w):
     return compute_levels(d, "short"), compute_levels(d, "long", extra=wk_extra)
 
 
-def _swing_plans(d, lv_s, lv_l, bear_short=False, bear_long=False):
-    """短線計畫：停損看短線支撐、目標可看到中長線壓力；中長線計畫：停損放寬 (2倍ATR、最多15%)"""
-    close, atr = float(d["close"].iloc[-1]), float(d["atr"].iloc[-1])
-    lv_plan = merge_for_plan(lv_s, lv_l)
-    ps = (plan_short if bear_short else plan_long)(close, atr, lv_plan, max_stop=0.08, max_t_atr=4)
-    pl = (plan_short if bear_long else plan_long)(close, atr * 2, lv_l, max_stop=0.15)
+def _swing_plans(d, lv_s, lv_l, bear_short=False, bear_long=False, tech_s=None, tech_l=None, base=None):
+    """短線：日K 20~60 根、箱寬上限 6 倍 ATR；中長線：日K 60~120 根、上限 10 倍 ATR
+    base：整理偵測結果 → 短線計畫強制用同一個箱型；已啟動則一定做多 (情況 B 拉回測試前箱頂)"""
+    shared = (base or {}).get("shared_box")
+    if shared and shared["status"] == "up":
+        bear_short = False
+    ps = make_plan(d, lv_s, bear=bear_short, unit="天", windows=(60, 50, 40, 30, 20), ma_fast="ma10", ma_slow="ma20",
+                   max_atr=6, tech=tech_s, box=shared)
+    pl = make_plan(d, lv_l, bear=bear_long, unit="天", windows=(120, 100, 80, 60), ma_fast="ma20", ma_slow="ma60",
+                   max_atr=10, tech=tech_l)
     ps["horizon"], pl["horizon"] = "短線", "中長線"
+    pb = (base or {}).get("prev_box")
+    if pb and not ps.get("box") and ps.get("regime", "").startswith("情況 B") and \
+            ps["side"] == ("做多" if pb.get("dir", "up") == "up" else "做空"):
+        ps["prev_box"] = pb
+        up = pb.get("dir", "up") == "up"
+        ps["why"].append(f"前箱型 {pb['box_low']} ~ {pb['box_high']} ({pb['days_ago']} 天前被{'突破' if up else '跌破'})："
+                         f"前箱{'頂' if up else '底'} {pb['box_high'] if up else pb['box_low']} 為{'拉回' if up else '反彈'}測試基準；"
+                         f"等幅預測新箱型 {pb['proj_low']} ~ {pb['proj_high']}")
     return ps, pl
 
 
-def _short_chart(d, lv_s, plan, title, box=None):
-    return plot(d, title, "1d", [(lv_s, "main", True)], lv_s, bars=60, mas=("ma5", "ma10", "ma20"), plan=plan, box=box)
+def _guard_long_bull(d, w, lv_l, close):
+    """中長線多方關鍵價防呆：不得低於「現價 - 4 倍日ATR」，改綁季線 / 半年線 / 近半年週K結構底"""
+    key = lv_l.setdefault("key", {})
+    cur = (key.get("bull") or {}).get("price")
+    atr = float(d["atr"].iloc[-1])
+    floor = close - 4 * atr
+    if cur is not None and floor <= cur < close:
+        return
+    cands = []
+    for col, name in (("ma60", "季線"), ("ma120", "半年線")):
+        if col in d and pd.notna(d[col].iloc[-1]):
+            cands.append((float(d[col].iloc[-1]), f"{name} {float(d[col].iloc[-1]):.2f}"))
+    wk = w.tail(26)
+    _, lo = find_pivots(wk, 2)
+    if len(lo):
+        p = float(wk["low"].iloc[lo[-1]])
+        cands.append((p, f"週K結構底 {round_tick(p)} ({wk.index[lo[-1]]:%Y-%m-%d} 當週)"))
+    ok = [c for c in cands if floor <= c[0] < close]
+    if ok:
+        p, why = max(ok, key=lambda c: c[0])
+    else:
+        p, why = floor, f"現價 - 4 倍日ATR ({atr:.2f})"
+    key["bull"] = {"price": round_tick(p, "down"), "half": None, "time": None,
+                   "why": f"{why}：中長線多方防守 (原 {cur} 距現價過遠，已限制在現價 - 4 ATR 以內)"}
 
+
+def _short_chart(d, lv_s, plan, title, box=None):
+    if plan and plan.get("box"):
+        box = plan["box"]
+    return plot(d, title, "1d", [(lv_s, "main", True)], lv_s, bars=60, mas=("ma5", "ma10", "ma20"), plan=plan, box=box)
 
 def score_base(sc, d):
     """整理型態：整理完成 / 帶量突破 / 跌破整理 → 加減分，回傳偵測結果"""
@@ -479,18 +478,24 @@ def score_base(sc, d):
         sc.add("型態", 1.0, f"{st} (完成度 {b['score']:.0f})：站上 {b['trigger']} 就是啟動訊號")
     elif st.startswith("跌破整理"):
         sc.add("型態", -1.5, f"{st}：跌破箱底 {b['box_low']}")
-    elif st != "不在整理":
+    elif st != "不在整理" and not st.startswith("趨勢盤"):
         sc.add("型態", 0, f"{st} (完成度 {b['score']:.0f})，箱子 {b['box_low']}~{b['box_high']}")
     return b
 
 
+def _api_base(b):
+    """回傳給前端時拿掉內部的共用箱型物件 (含 Timestamp)"""
+    return {k: v for k, v in b.items() if k != "shared_box"} if b else b
+
+
 def _long_chart(d, lv_l, plan, title):
     return plot(d, title, "1d", [(lv_l, "main", True)], lv_l, bars=250,
-                mas=("ma20", "ma60", "ma120", "ma240"), plan=plan)
+                mas=("ma20", "ma60", "ma120", "ma240"), plan=plan, box=(plan or {}).get("box"))
 
 
 def _weekly_chart(w, lv_w, title, plan=None):
-    return plot(w, title, "1wk", [(lv_w, "main", True)], lv_w, bars=104, mas=("ma5", "ma10", "ma20", "ma60"), plan=plan)
+    return plot(w, title, "1wk", [(lv_w, "main", True)], lv_w, bars=104, mas=("ma5", "ma10", "ma20", "ma60"), plan=plan,
+                box=(plan or {}).get("box"))
 
 
 def _intraday_levels(d, m5, m1):
@@ -518,12 +523,15 @@ def _intraday_levels(d, m5, m1):
 
 
 def _intraday_chart(df, lv, tf, title, plan=None):
+    box = (plan or {}).get("box")
+    if box and tf == "1m":
+        box = None  # 箱型以 5分K 判定
     return plot(df, title, tf, [(lv, "main", True)], lv, show_vwap=True, mas=("ma5", "ma20", "ma60"),
-                day_split=True, plan=plan)
+                day_split=True, plan=plan, box=box)
 
 
-def _intraday_plan(close, atr5, lv, bear=False, code=None):
-    """當沖計畫：目標價不超過今日漲跌停"""
+def _intraday_plan(close, atr5, lv, bear=False, code=None, m5=None, tech=None):
+    """當沖計畫：目標價不超過今日漲跌停；有 5分K 時用箱型規則 (5分K ATR14、5MA 移動停利)"""
     cap = None
     if code:
         try:
@@ -532,7 +540,8 @@ def _intraday_plan(close, atr5, lv, bear=False, code=None):
             cap = q["limit_down"] if bear else q["limit_up"]
         except Exception:  # noqa: BLE001
             pass
-    p = (plan_short if bear else plan_long)(close, atr5 * 2, lv, max_stop=0.015, min_stop=0.004, cap=cap)
+    p = make_plan(m5, lv, bear=bear, atr=atr5, windows=(60, 48, 36, 24, 20), cap=cap, unit="根",
+                  ma_fast="ma5", ma_slow="ma20", max_atr=6, tech=tech, intraday_vol=True)
     p["horizon"] = "當沖"
     return p
 
@@ -563,9 +572,14 @@ def analyze_swing(code, entry=None, side="long", charts=True, with_chips=True):
     weekly = sc.by_cat().get("週K", 0)
     if weekly < -2 and total > 0:
         advice += "（但週線偏空，屬反彈格局，部位要小、停損要快）"
-    plan, plan_l = _swing_plans(d, lv_s, lv_l, bear_short=total <= -3.5, bear_long=weekly < -2)
-    if plan["side"] == "做多" and plan["rr"] < 1.5 and total > 0:
+    cats = sc.by_cat()
+    plan, plan_l = _swing_plans(d, lv_s, lv_l, bear_short=total <= -3.5, bear_long=weekly < -2,
+                                tech_s=cats.get("日K", 0), tech_l=weekly, base=base)
+    if plan.get("no_room"):
+        advice += f"；{plan['rr_text']}"
+    elif plan["side"] == "做多" and plan["rr"] < 1.5 and total > 0:
         advice += f"；目前風報比 {plan['rr']} 偏低，建議等拉回 {plan['entry_zone'][0]} 附近再進"
+    _guard_long_bull(d, w, lv_l, close)
     bl = lv_l["key"].get("bull", {}).get("price")
     if bl and plan["side"] == "做多":
         notes.append(f"中長線多方關鍵價 {bl}：跌破代表中期趨勢轉弱，波段部位應全數出場")
@@ -575,7 +589,7 @@ def analyze_swing(code, entry=None, side="long", charts=True, with_chips=True):
            "time": d.index[-1].strftime("%Y-%m-%d"), "total": total, "tone": tone, "advice": advice,
            "by_cat": sc.by_cat(), "items": sc.items, "plan": plan, "plans": {"short": plan, "long": plan_l},
            "chips": chips, "market_info": minfo,
-           "levels": {"short": clean(lv_s), "long": clean(lv_l), "1wk": clean(lv_w)}, "notes": notes, "base": base}
+           "levels": {"short": clean(lv_s), "long": clean(lv_l), "1wk": clean(lv_w)}, "notes": notes, "base": _api_base(base)}
     if entry:
         res["position"] = exit_check(close, float(entry), side, plan, lv_s, d, "swing")
     if charts:
@@ -687,7 +701,7 @@ def analyze_daytrade(code, entry=None, side="long", charts=True, with_chips=True
         notes.append(f"總分 {total} 偏空，但盤中 5分K+1分K 合計 {intraday:+.1f} 分 (轉強)，等盤中轉弱再做空")
     else:
         total_gate = total
-    plan = _intraday_plan(c1, atr5, lv5, bear=total_gate <= -4, code=info["code"])
+    plan = _intraday_plan(c1, atr5, lv5, bear=total_gate <= -4, code=info["code"], m5=it["s5"], tech=intraday)
     if total_gate >= 4:
         advice = "可做多當沖：拉回 VWAP 或支撐不破進場，跌破停損價立即出場"
     elif total_gate <= -4:
@@ -759,7 +773,11 @@ def _plan_text(p):
     if p.get("breakout"):
         t.append(f"或{'突破' if long else '跌破'} {p['breakout']} {'追價買進' if long else '追價放空'}")
     t.append(f"停損 {p['stop']} ({'-' if long else '+'}{p['risk_pct']}%)")
-    t.append(f"目標一 {p['target1']}、目標二 {p['target2']}，風報比 {p['rr']}")
+    t.append(f"目標一 {p['target1']}、目標二 {p['target2']}，" + (p["rr_text"] if p.get("rr_text") else f"風報比 {p['rr']}"))
+    if p.get("regime"):
+        t.insert(0, p["regime"])
+    if p.get("trail"):
+        t.append(p["trail"])
     if p.get("note"):
         t.insert(0, f"⚠ {p['note']}")
     return "；".join(t)
@@ -792,12 +810,11 @@ def tx_levels_report(tf="5m"):
     lv["why"].append(ind["judge"])
     close, atr = float(df["close"].iloc[-1]), float(df["atr"].iloc[-1])
     bear = ind["total"] <= -3
-    if tf in ("1m", "5m"):
-        p = (plan_short if bear else plan_long)(close, atr * (2 if tf == "5m" else 4), lv, max_stop=0.01, min_stop=0.002)
-        p["horizon"] = "台指期當沖"
-    else:
-        p = (plan_short if bear else plan_long)(close, atr, lv, max_stop=0.04 if tf == "60m" else 0.06)
-        p["horizon"] = "台指期波段"
+    p = make_plan(df, lv, bear=bear, atr=atr if tf in ("1m", "5m") else None, unit="天" if tf == "1d" else "根",
+                  windows=(30, 25, 20) if tf == "1d" else (60, 48, 36, 24, 20),
+                  ma_fast="ma5" if tf in ("1m", "5m") else "ma10", ma_slow="ma20",
+                  max_atr=6 if tf in ("1m", "5m") else 10, tech=ind["total"], intraday_vol=True)
+    p["horizon"] = "台指期當沖" if tf in ("1m", "5m") else "台指期波段"
     p["text"] = _plan_text(p)
     contract = str(full["contract"].iloc[-1]) if "contract" in full else "近月"
     seg = [f"{pd.Timestamp(t):%m/%d} {s}" for t, s in zip(df["tday"], df["sess"])] if tf != "1d" else None
@@ -805,7 +822,7 @@ def tx_levels_report(tf="5m"):
             "1d": "近 30 個交易日日K (一天 = 夜盤+日盤)"}[tf]
     title = f"台指期近全 {contract}  {span}  支撐壓力"
     chart = plot(df, title, tf, [(lv, "main", True)], lv, mas=("ma5", "ma20", "ma60"), plan=p, seg=seg,
-                 bars=200 if tf == "60m" else None)
+                 bars=200 if tf == "60m" else None, box=p.get("box"))
     return {"code": "TX", "name": f"台指期近全 {contract}", "tf": tf, "close": close, "futures": True,
             "time": f"{df.index[-1]:%Y-%m-%d %H:%M}", "session": cur_sess,
             "levels": {tf: clean(lv)}, "plans": {tf: p}, "indicators": ind, "charts": {tf: chart}, "base": None}
@@ -828,10 +845,11 @@ def levels_report(code, tf="1d"):
         ind_w = _judge(w, "週K", lv_l, look=13)
         lv_s["why"].append(ind["judge"])
         lv_l["why"].append("中長線看週K指標 → " + ind_w["judge"])
-        ps, pl = _swing_plans(d, lv_s, lv_l, bear_short=ind["total"] <= -3, bear_long=ind_w["total"] <= -3)
+        base = score_base(Score(), d)
+        ps, pl = _swing_plans(d, lv_s, lv_l, bear_short=ind["total"] <= -3, bear_long=ind_w["total"] <= -3,
+                              tech_s=ind["total"], tech_l=ind_w["total"], base=base)
         levels = {"short": clean(lv_s), "long": clean(lv_l)}
         plans = {"short": ps, "long": pl}
-        base = score_base(Score(), d)
         charts = {"short": _short_chart(d, lv_s, ps, f"{title}  短線波段支撐壓力 (日K 近60日)", box=base),
                   "long": _long_chart(d, lv_l, pl, f"{title}  中長線波段支撐壓力 (日K 近一年 + 週K轉折)")}
         last = d.index[-1]
@@ -840,8 +858,8 @@ def levels_report(code, tf="1d"):
         lv = compute_levels(w, "1wk")
         ind = _judge(w, "週K", lv, look=13)
         lv["why"].append(ind["judge"])
-        close, atr = float(w["close"].iloc[-1]), float(w["atr"].iloc[-1])
-        p = (plan_short if ind["total"] <= -3 else plan_long)(close, atr, lv, max_stop=0.15)
+        p = make_plan(w, lv, bear=ind["total"] <= -3, unit="週", windows=(60, 52, 40, 26, 20), ma_fast="ma10", ma_slow="ma20",
+                      max_atr=10, tech=ind["total"])
         p["horizon"] = "週線"
         levels, plans = {"1wk": clean(lv)}, {"1wk": p}
         charts = {"1wk": _weekly_chart(w, lv, f"{title}  週K 支撐壓力", p)}
@@ -855,7 +873,8 @@ def levels_report(code, tf="1d"):
         lv = it["lv5" if tf == "5m" else "lv1"]
         ind = _judge(m5 if tf == "5m" else m1, "5分K" if tf == "5m" else "1分K", lv, look=12)
         lv["why"].append(ind["judge"])
-        p = _intraday_plan(float(src["close"].iloc[-1]), float(m5["atr"].iloc[-1]), it["lv5"], bear=ind["total"] <= -3, code=info["code"])
+        p = _intraday_plan(float(src["close"].iloc[-1]), float(m5["atr"].iloc[-1]), it["lv5"], bear=ind["total"] <= -3,
+                           code=info["code"], m5=it["s5"], tech=ind["total"])
         levels, plans = {tf: clean(lv)}, {tf: p}
         charts = {tf: _intraday_chart(src, lv, tf, f"{title}  {'5分K 當沖 (前一日 + 今日)' if tf == '5m' else '1分K 當沖 (今日)'} 支撐壓力", p)}
         last = src.index[-1]
@@ -864,4 +883,4 @@ def levels_report(code, tf="1d"):
     first = next(iter(levels.values()))
     return {"code": info["code"], "name": info["name"], "tf": tf, "close": first["close"],
             "time": last.strftime("%Y-%m-%d %H:%M"), "levels": levels, "plans": plans, "indicators": ind, "charts": charts,
-            "base": base if tf == "1d" else None}
+            "base": _api_base(base) if tf == "1d" else None}

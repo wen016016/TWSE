@@ -109,8 +109,49 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
             ax.add_patch(Rectangle((x0 - 0.5, box["box_low"]), len(d) - x0, box["box_high"] - box["box_low"],
                                    facecolor=bc, alpha=0.07, edgecolor=bc, lw=1.2, ls="--", zorder=0))
             short = box["stage"].split("，")[0].split(" (")[0]  # 只留「整理完成 / 整理中 / 已啟動」，避免文字延伸到右邊
-            ax.text(x0, box["box_high"], f" 整理箱 {box['window']}天 · {short}", va="bottom", fontsize=9,
+            ax.text(x0, box["box_high"], f" 箱型 {box['window']}{box.get('unit', '天')} · {short}", va="bottom", fontsize=9,
                     color=bc, fontweight="bold")
+    pb = (plan or {}).get("prev_box")
+    if pb:
+        from matplotlib.patches import Rectangle
+        tz = d.index.tz
+        def _ix(s):
+            t = pd.Timestamp(s)
+            return int(np.searchsorted(d.index, t.tz_localize(tz) if tz else t))
+        x0, xb = _ix(pb["start_date"]), _ix(pb["break_date"])
+        if xb < len(d):
+            x0 = min(x0, xb)
+            up = pb.get("dir", "up") == "up"
+            ph = pb["box_high"] - pb["box_low"]
+            # 前箱型：灰虛線框 + 淡底色
+            ax.add_patch(Rectangle((x0 - 0.5, pb["box_low"]), xb - x0, ph,
+                                   facecolor="gray", alpha=0.15, lw=0, zorder=0))
+            ax.add_patch(Rectangle((x0 - 0.5, pb["box_low"]), xb - x0, ph,
+                                   facecolor="none", edgecolor="gray",
+                                   alpha=0.55, lw=1.1, ls="--", zorder=0))
+            ref = pb["box_high"] if up else pb["box_low"]
+            ax.hlines(ref, x0 - 0.5, len(d) - 0.5, color="gray", lw=1, alpha=0.7)
+            lab = " 前箱頂 " if up else " 前箱底 "
+            ax.text(x0, ref, lab + f"{ref:g}", va="bottom" if up else "top",
+                    fontsize=9, color="#555")
+            # 預測新箱型：右界限制在最新 K 棒 + 5 根
+            xr = min(xb - 0.5 + pb["window"], len(d) - 1 + 5.5)
+            nh = pb["proj_high"] - pb["proj_low"]
+            ax.add_patch(Rectangle((xb - 0.5, pb["proj_low"]), xr - (xb - 0.5), nh,
+                                   facecolor="#9575cd", alpha=0.15, lw=0, zorder=0))
+            ax.add_patch(Rectangle((xb - 0.5, pb["proj_low"]), xr - (xb - 0.5), nh,
+                                   facecolor="none", edgecolor="#7e57c2",
+                                   alpha=0.5, lw=1.1, ls="--", zorder=0))
+            pv = pb["proj_high"] if up else pb["proj_low"]
+            tol = 1.5 * float((plan or {}).get("atr") or 0)
+            near = bool(plan) and not plan.get("note") and any(
+                q is not None and abs(q - pv) <= tol
+                for q in (plan.get("target1"), plan.get("target2"), plan.get("breakout")))
+            # 接近目標 / 追價價 → 標籤靠框的最左側，和右側交易標籤錯開
+            tx, ha = (xb - 0.5, "left") if near else (xr, "right")
+            lab = " 預測新箱頂 " if up else " 預測新箱底 "
+            ax.text(tx, pv, lab + f"{pv:g} ", va="bottom" if up else "top",
+                    ha=ha, fontsize=9, color="#7e57c2", clip_on=True)
     ax.vlines(x, l, h, color=col, lw=0.9)
     body = np.maximum(np.abs(c - o), (h.max() - l.min()) * 0.0015)
     ax.bar(x, body, bottom=np.minimum(o, c), color=col, width=0.62, edgecolor=col)
@@ -179,6 +220,8 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
     prices = [l.min(), h.max()] + list(merged) + [p for p, *_ in plan_items] + (list(plan["entry_zone"]) if plan_items else [])
     if box and box.get("box_high"):
         prices += [box["box_high"], box["box_low"]]
+    if (plan or {}).get("prev_box"):
+        prices += [plan["prev_box"]["box_low"], plan["prev_box"]["proj_high"]]
     lo, hi = min(prices), max(prices)
     pad = (hi - lo) * 0.07
     ax.set_ylim(lo - pad, hi + pad)

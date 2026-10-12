@@ -1,6 +1,6 @@
 """個股「整理完成、準備啟動」偵測
 
-整理區間：近 20 / 30 / 40 / 60 根日K 中，高低差最窄、且股價沒有明顯單邊走勢的箱子
+整理區間：用 box.py 的箱型規則 (近 20~60 根日K、實體為主、箱頂箱底各 2 次觸碰、寬 3~6 倍 ATR20、前後半段均價差 <= 箱寬 45%)
 完成度 (0~100)：
   波動收斂 25  布林通道寬度在近 120 天的低檔 / ATR 比 60 日平均小
   量縮     20  近 5 日均量 / 60 日均量
@@ -24,25 +24,19 @@ from .config import DATA_DIR
 from .indicators import add_indicators, round_tick, tick
 
 WINDOWS = (20, 30, 40, 60)
-STATS_FILE = DATA_DIR / "base_stats.json"
+STATS_FILE = DATA_DIR / "base_stats_v2.json"   # 箱型規則改版，統計重算
 
 
 def _find_box(d: pd.DataFrame, end: int):
-    """回傳 (window, box_high, box_low, height%)：用 end 之前 (不含 end) 的 K 棒找整理箱"""
-    best = None
-    close = float(d["close"].iloc[end])
-    atrp = float(d["atr"].iloc[end] / close)
-    for w in WINDOWS:
-        if end - w < 0:
-            continue
-        seg = d.iloc[end - w:end]
-        hi, lo = float(seg["high"].max()), float(seg["low"].min())
-        height = hi / lo - 1
-        # 單邊走勢檢查：前後半段的均價差太大就不算整理
-        drift = abs(seg["close"].iloc[w // 2:].mean() / seg["close"].iloc[:w // 2].mean() - 1)
-        if height <= max(0.18, 7 * atrp) and drift <= height * 0.45:
-            best = (w, hi, lo, height)   # 越長的整理越有份量，取符合條件的最長視窗
-    return best
+    """用新箱型規則 (box.py：實體為主、2 次以上觸碰、寬 3~6 倍 ATR20、均價差 <= 箱寬 45%)
+    回傳 (window, box_high, box_low, height%, status)；status = range / up / down (第 end 根收盤在箱外)"""
+    from .box import atr_mean, find_box
+    seg = d.iloc[:end + 1]
+    atr = atr_mean(seg, 20)
+    bx = find_box(seg, atr, tuple(sorted(WINDOWS, reverse=True)), max_excl=10, max_atr=6)
+    if not bx:
+        return None
+    return bx["window"], bx["hi"], bx["lo"], bx["hi"] / bx["lo"] - 1, bx["status"], bx["after"], bx
 
 
 def _score_at(d: pd.DataFrame, end: int):
@@ -54,8 +48,8 @@ def _score_at(d: pd.DataFrame, end: int):
     close = float(x["close"])
     if box is None:
         return {"stage": "不在整理", "score": 0}
-    w, hi, lo, height = box
-    seg = d.iloc[end - w:end + 1]
+    w, hi, lo, height, status, after, raw = box
+    seg = d.iloc[max(0, end - w - after + 1):end - after + 1]
     pts, why = {}, []
 
     bw = (d["bb_up"] - d["bb_dn"]) / d["bb_mid"]
@@ -96,10 +90,15 @@ def _score_at(d: pd.DataFrame, end: int):
 
     score = round(sum(pts.values()), 0)
     vma20 = float(d["volume"].iloc[end - 20:end].mean())
-    broke_up = close > hi and float(x["volume"]) > 1.5 * vma20
-    broke_dn = close < lo and float(x["volume"]) > 1.2 * vma20
-    if broke_up:
-        stage = "已啟動 (帶量突破箱頂)"
+    # 破局：收盤在箱外且隔天未拉回 (after >= 2)，或當天帶量 (> 1.5 倍 20 均量)
+    broke_up = status == "up" and (after >= 2 or float(x["volume"]) > 1.5 * vma20)
+    broke_dn = status == "down" and after >= 2
+    if status == "up" and not broke_up:
+        stage = "收盤站上箱頂但量不足 (等隔日確認)"
+    elif status == "down" and not broke_dn:
+        stage = "收盤跌破箱底 (等隔日確認)"
+    elif broke_up:
+        stage = "已啟動 (帶量突破箱頂)" if float(x["volume"]) > 1.5 * vma20 else "已啟動 (突破箱頂且隔日未拉回)"
     elif broke_dn:
         stage = "跌破整理 (轉弱)"
     elif score >= 70 and pos >= 0.6:
@@ -112,7 +111,7 @@ def _score_at(d: pd.DataFrame, end: int):
         stage = "整理中"
     return {"stage": stage, "score": score, "window": w, "box_high": hi, "box_low": lo, "height_pct": round(height * 100, 1),
             "pts": {k: round(v, 1) for k, v in pts.items()}, "why": why, "broke_up": bool(broke_up), "broke_dn": bool(broke_dn),
-            "pos": round(pos * 100, 0), "vol_ratio": round(vr, 2)}
+            "pos": round(pos * 100, 0), "vol_ratio": round(vr, 2), "after": after, "_box": raw}
 
 
 def detect(d: pd.DataFrame) -> dict:
@@ -120,18 +119,38 @@ def detect(d: pd.DataFrame) -> dict:
     d = d.copy()
     end = len(d) - 1
     cur = _score_at(d, end)
+    # 全域共享箱型：只用「今天」判定的箱型，不再沿用前幾天的舊箱型
     if not cur or cur["stage"] == "不在整理":
-        # 看最近 3 天有沒有剛突破 (今天不一定還在箱子裡)
+        out = {"stage": "趨勢盤，目前無有效箱型", "score": 0,
+               "why": ["近 20~60 天沒有形成有效的整理箱 (走勢單邊或振幅太大)，以趨勢盤處理"]}
+        # 保留 1~3 天前剛被突破的舊箱型 (只供繪圖 / 等幅預測參考，不當作目前箱型)
         for k in (1, 2, 3):
             prev = _score_at(d, end - k)
-            if prev and prev.get("broke_up"):
-                prev = dict(prev, stage=f"{k} 天前已啟動 (帶量突破箱頂)")
-                cur = prev
+            if prev and (prev.get("broke_up") or prev.get("broke_dn")):
+                raw = prev["_box"]
+                after = int(raw["after"]) + k
+                bi = max(0, len(d) - after)
+                hi, lo = float(raw["hi"]), float(raw["lo"])
+                up = bool(prev.get("broke_up"))
+                pl_, ph_ = (hi, hi + (hi - lo)) if up else (lo - (hi - lo), lo)
+                out["prev_box"] = {"box_high": round_tick(hi), "box_low": round_tick(lo), "window": int(raw["window"]),
+                                   "start_date": f"{pd.Timestamp(raw['start']):%Y-%m-%d}",
+                                   "break_date": f"{d.index[bi]:%Y-%m-%d}",
+                                   "days_ago": k, "dir": "up" if up else "down",
+                                   "proj_low": round_tick(pl_), "proj_high": round_tick(ph_)}
                 break
-    if not cur or cur["stage"] == "不在整理":
-        return {"stage": "不在整理", "score": 0, "why": ["近 20~60 天沒有形成明顯的整理箱 (走勢較單邊或振幅太大)"]}
+        return out
+    raw = cur.pop("_box")
+    if "已啟動" in cur["stage"]:
+        raw = dict(raw, status="up", confirmed=True)
+    cur["shared_box"] = dict(raw, source=cur["stage"])
     close = float(d["close"].iloc[-1])
     hi, lo = cur["box_high"], cur["box_low"]
+    # 位置百分比一律用當天收盤 (現價)
+    pos = (close - lo) / (hi - lo) * 100 if hi > lo else 50
+    cur["pos"] = round(pos, 1)
+    cur["why"] = [f"收盤在箱子的 {pos:.1f}% 位置 (0% = 箱底，100% = 箱頂)" if w.startswith("收盤在箱子") else w
+                  for w in cur["why"]]
     trigger = round_tick(hi + tick(hi), "up")
     ma20 = float(d["ma20"].iloc[-1])
     stop_cands = [p for p in (lo, ma20) if p < close]
@@ -139,7 +158,7 @@ def detect(d: pd.DataFrame) -> dict:
     target = round_tick(hi * (1 + cur["height_pct"] / 100))
     cur.update(trigger=trigger, stop=stop, target=target, box_high=round_tick(hi), box_low=round_tick(lo),
                to_trigger_pct=round((trigger / close - 1) * 100, 2),
-               start_date=f"{d.index[-1 - cur['window']]:%Y-%m-%d}")
+               start_date=f"{pd.Timestamp(raw['start']):%Y-%m-%d}")
     stats = pooled_stats(background=True)
     if stats and stats.get("ready"):
         cur["history"] = stats

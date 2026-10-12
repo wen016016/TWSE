@@ -111,8 +111,8 @@ async def api_stream(request: Request, codes: str = ""):
 
 
 @app.get("/api/scan")
-def api_scan(mode: str = "swing", top: int = 8, direction: str = "long"):
-    return run(scanner.scan, mode, top, direction)
+def api_scan(mode: str = "swing", top: int = 8, direction: str = "long", scope: str = "all"):
+    return run(scanner.scan, mode, top, direction, scope)
 
 
 @app.get("/api/settings")
@@ -162,6 +162,41 @@ def api_ledger():
                 "status": broker.budget_status(), "accounts": broker.accounts_summary(),
                 "holdings": {a["id"]: brokers.account_data(a["id"]) for a in brokers.accounts(False)}}
     return run(f)
+
+
+# ----------------------------------------------------------------- 自選清單
+@app.get("/api/watchlist")
+def api_watchlist():
+    from stock import watchlist
+    return run(lambda: {"items": watchlist.items()})
+
+
+@app.post("/api/watchlist")
+def api_watchlist_edit(req: dict = Body(...)):
+    """{action: add / remove / note / up / down, code, note}"""
+    from stock import watchlist
+
+    def f():
+        a, code = req.get("action"), (req.get("code") or "").strip()
+        if not code:
+            raise ValueError("請輸入代號")
+        if a == "add":
+            return {"items": watchlist.add(code, req.get("note", ""))}
+        if a == "remove":
+            return {"items": watchlist.remove(code)}
+        if a == "note":
+            return {"items": watchlist.set_note(code, req.get("note", ""))}
+        if a in ("up", "down"):
+            return {"items": watchlist.move(code, -1 if a == "up" else 1)}
+        raise ValueError("action 只能是 add / remove / note / up / down")
+    return run(f)
+
+
+@app.get("/api/watchlist/eval")
+def api_watchlist_eval():
+    from stock import data as D, watchlist
+    return run(lambda: {"items": D.cached("wl_eval:" + ",".join(x["code"] for x in watchlist.items()), 60,
+                                          watchlist.evaluate)})
 
 
 @app.get("/api/market_risk")

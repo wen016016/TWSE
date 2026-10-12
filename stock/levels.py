@@ -276,17 +276,6 @@ def clean(lv: dict) -> dict:
     return out
 
 
-def merge_for_plan(short: dict, long: dict) -> dict:
-    """波段計畫：支撐用短線 (停損較近)，壓力 = 短線 + 中長線 (目標可以看比較遠)"""
-    res = {r["price"]: r for r in long["resistances"]}
-    res.update({r["price"]: r for r in short["resistances"]})
-    sup = {s["price"]: s for s in long["supports"]}
-    sup.update({s["price"]: s for s in short["supports"]})
-    return {"supports": sorted(sup.values(), key=lambda x: -x["price"]),
-            "resistances": sorted(res.values(), key=lambda x: x["price"]),
-            "key": short["key"]}
-
-
 def sessions(df: pd.DataFrame, n: int) -> pd.DataFrame:
     """取最近 n 個交易日的盤中資料"""
     days = sorted(set(df.index.date))[-n:]
