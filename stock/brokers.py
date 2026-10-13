@@ -135,8 +135,24 @@ def add_account(broker: str, name: str = "", login_url: str = "") -> dict:
         _save(ACCOUNTS_FILE, accs)
         f = SEL_DIR / f"{acc_id}.json"
         if not f.exists():
-            _save(f, SEL_TEMPLATE)
+            _save(f, preset_selectors(base) or SEL_TEMPLATE)
         return a
+
+
+PRESET_SEL_DIR = SEL_DIR / "presets"
+
+
+def preset_selectors(base: str) -> dict | None:
+    """同一家券商的網頁都一樣 → 校正一次就能給所有人用：
+    先找內建校正檔 brokers/presets/<券商>.json，再找電腦上同券商已校正好的帳戶"""
+    p = _load(PRESET_SEL_DIR / f"{base}.json", None)
+    if p:
+        return p
+    for f in sorted(SEL_DIR.glob(f"{base}*.json")):
+        s = _load(f, {})
+        if s.get("account_api") or all(s.get(k) for k in ("code", "qty", "price", "buy", "sell", "confirm")):
+            return s
+    return None
 
 
 def update_account(acc_id: str, **fields) -> dict:
@@ -175,7 +191,8 @@ def selectors(acc_id: str) -> dict:
 def calibrated(acc_id: str) -> dict:
     s = selectors(acc_id)
     return {"order": all(s.get(k) for k in ("code", "qty", "price", "buy", "sell", "confirm")),
-            "account": bool(s.get("account_api") or s.get("account", {}).get("holdings_table"))}
+            "account": bool(s.get("account_api") or s.get("account", {}).get("holdings_table")
+                              or (s.get("account", {}).get("auto") or {}).get("header"))}
 
 
 # ----------------------------------------------------------------- 帳務資料
@@ -390,7 +407,16 @@ class WebBroker:
             return {"status": f"已擷取 {self.acc['name']}「{safe}」頁面", "url": page.url, "html": str(html),
                     "png": str(png), "frames": len(page.frames)}
 
-        return _w().call(fn)
+        res = _w().call(fn)
+        try:
+            from . import autocal
+            learned = autocal.learn(self)
+        except Exception as e:  # noqa: BLE001
+            learned = None
+            res["auto_error"] = str(e)
+        if learned:
+            res["status"] += "；" + learned + "，可以按「同步帳務」了"
+        return res
 
     # ------------------------------------------------------------ 帳務同步
     def _sync_page(self):
@@ -414,8 +440,11 @@ class WebBroker:
         if api:
             return self._sync_api(api)
         cfg = selectors(self.id).get("account", {})
+        if not cfg.get("holdings_table") and (cfg.get("auto") or {}).get("header"):
+            from . import autocal
+            return autocal.sync(self)
         if not cfg.get("holdings_table"):
-            raise RuntimeError(f"{self.acc['name']} 帳務頁面尚未校正：登入後到庫存頁、帳務頁各按一次「擷取」，再請 Claude 設定")
+            raise RuntimeError(f"{self.acc['name']} 帳務頁面尚未校正：登入後打開「庫存」頁按一次「擷取」即可自動校正")
         self._need_ctx()
 
         def goto(page, url):
@@ -564,7 +593,7 @@ class WebBroker:
                 except RuntimeError:
                     pass
             settles = []
-            if api.get("settle"):  # 交割款：交割日還沒到 (或今天 10:00 前) 的 = 交割中，還沒進出分戶帳
+            if api.get("settle"):  # 交割款：交割日還沒到 (或交割日凌晨 4:00 前) 的 = 交割中，還沒進出分戶帳
                 try:
                     ss = api["settle"]
                     now = _now()
@@ -574,7 +603,7 @@ class WebBroker:
                         if amt is None or not re.match(r"\d{4}/\d{2}/\d{2}", sd):
                             continue
                         sdate = dt.datetime.strptime(sd, "%Y/%m/%d").date()
-                        pending = sdate > now.date() or (sdate == now.date() and now.hour < 10)
+                        pending = sdate > now.date() or (sdate == now.date() and now.hour < 4)
                         settles.append({"trade_date": row.get(ss["trade_date"], ""), "settle_date": sd,
                                         "amount": amt, "pending": pending})
                 except RuntimeError:

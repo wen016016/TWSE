@@ -363,7 +363,33 @@ def exit_check(close, entry, side, plan, lv, d, mode):
                 sig.append(("減碼", f"{hor}移動停利觸發：收盤 {close} 已{'跌破' if side == 'long' else '站回'} {'、'.join(broke)}，獲利了結"))
             else:
                 sig.append(("移動停利", f"{hor}已獲利 (現價 {close} {'>' if side == 'long' else '<'} 成本 {entry})：{et[side]}"))
-        sig.append(("成本", f"你的成本 {entry}：" + ("目前停損 " + str(plan["stop"]) + (" 已高於成本，獲利有保護" if plan["stop"] >= entry and side == "long" else " 低於成本，最大虧損 " + f"{(plan['stop'] / entry - 1) * 100:.1f}%"))))
+        stop_eff = plan["stop"]
+        if side == "long" and plan["side"] == "做多" and plan["regime"].startswith("情況 B"):
+            # 情況 B 多單：以 10MA / 前箱頂結構為防守，不用遠端絕對停損
+            ma10 = float(r["ma10"]) if pd.notna(r.get("ma10")) else None
+            bx = plan.get("box") or plan.get("prev_box") or {}
+            top = bx.get("box_high") if bx.get("box_high") and bx["box_high"] < close * 1.2 else None
+            guards = [(f"10MA {ma10:.2f}", ma10)] if ma10 else []
+            if top:
+                guards.append((f"前箱頂 {top}", top))
+            broke = [n for n, v in guards if close < v]
+            if broke:
+                sig.append(("出場", f"收盤 {close} 跌破 {'、'.join(broke)}：強勢趨勢轉弱，已跌破多方結構，"
+                                    "建議盤中或收盤立即出場"))
+            elif entry > close and guards:
+                sig.append(("防守", "成本套牢中，出場改用動態結構守點："
+                                    + " 或 ".join(f"收盤跌破 {n}" for n, _ in guards) + " 立即出場"))
+            below = [v for _, v in guards if v < close]
+            if below:
+                stop_eff = max(stop_eff, max(below))
+        if side == "long":
+            stop_eff = max(stop_eff, round_tick(entry * 0.9, "up")) if stop_eff < entry * 0.9 else stop_eff
+            loss = (stop_eff / entry - 1) * 100
+            cost_txt = (f"有效停損 {stop_eff:g} 已高於成本，獲利有保護" if stop_eff >= entry
+                        else f"有效停損 {stop_eff:g} 低於成本，最大虧損 {loss:.1f}% (上限 -10%)")
+        else:
+            cost_txt = f"目前停損 {plan['stop']}"
+        sig.append(("成本", f"你的成本 {entry}：{cost_txt}"))
     if side == "long":
         if bull and close < bull:
             sig.append(("出場", f"跌破多方關鍵價 {bull}"))
@@ -386,13 +412,58 @@ def exit_check(close, entry, side, plan, lv, d, mode):
         sig.append(("出場", f"虧損 {pnl:.1f}% 超過 8% 停損上限"))
     if mode == "daytrade" and pnl <= -1.5:
         sig.append(("出場", f"當沖虧損 {pnl:.1f}% 超過 1.5%"))
+    if pnl < 0 and any(s[0] == "停利" for s in sig):
+        # 套牢中：停利提示與現況矛盾 → 全部移除，改一行提醒
+        sig = [s for s in sig if s[0] != "停利"]
+        sig.append(("停利", "目前處於被套牢區，本檔不適用停利計畫，專注執行上述動態防守"))
+    if side == "long" and plan and plan.get("regime") and plan["side"] == "做多" \
+            and not any(s[0] == "出場" for s in sig):
+        _add_or_average(sig, close, entry, plan, d)
     action = "續抱"
     if any(s[0] == "出場" for s in sig):
         action = "建議出場"
-    elif any(s[0] in ("減碼", "停利") for s in sig):
+    elif any(s[0] == "減碼" for s in sig) or (pnl >= 0 and any(s[0] == "停利" for s in sig)):
         action = "建議減碼 / 分批停利"
     return {"entry": entry, "side": side, "pnl_pct": round(pnl, 2), "action": action,
             "signals": [{"type": a, "text": b} for a, b in sig]}
+
+
+def _add_or_average(sig, close, entry, plan, d):
+    """多單加碼 (獲利 + 情況 B + 站上 10MA) / 套牢防禦攤平 (情況 A 箱底 + 止跌K)；
+    已有出場訊號時不會呼叫 (情況 B 跌破 10MA 嚴禁攤平)"""
+    from .box import _candle_signal
+    r = d.iloc[-1]
+    ma10 = float(r["ma10"]) if pd.notna(r.get("ma10")) else None
+    atr = float(plan.get("atr") or r.get("atr") or 0)
+    regime = plan.get("regime", "")
+    o = float(r["open"])
+    if close > entry and regime.startswith("情況 B") and ma10 and close > ma10:
+        hit = None
+        if close <= ma10 + 0.5 * atr and float(r["low"]) <= ma10 + 0.25 * atr and close > o:
+            hit = f"{round_tick(ma10)} (拉回 10MA 收紅K 獲得支撐)"
+        else:
+            prev_hi = float(d["high"].iloc[-21:-1].max())
+            vma = float(d["volume"].iloc[-21:-1].mean()) or 1
+            if close > prev_hi and float(r["volume"]) > 1.5 * vma:
+                hit = f"{round_tick(prev_hi)} (帶量突破近 20 日波段高點)"
+        if hit:
+            sig.append(("加碼", f"【加碼計畫】：目前多單獲利中且趨勢強勢，觸及加碼點 {hit}，允許加碼原始部位的 50%，"
+                                f"並將防守點同步上移至 10MA {ma10:.2f}"))
+    elif close < entry and regime.startswith("情況 A") and plan.get("box"):
+        lo = float(plan["box"]["box_low"])
+        k = _candle_signal(d, bottom=True)
+        if lo <= close <= lo + 0.5 * atr and k:
+            sig.append(("攤平", f"【防禦攤平】：目前持倉套牢，但股價已回測大區間箱底 {lo:g} 大支撐，止跌確認 ({k})，"
+                                f"允許在此處執行一次性攤平。警示：若後續日K收盤跌破箱底 - 0.5ATR ({round_tick(lo - 0.5 * atr)})，"
+                                "兩筆部位必須立刻全數砍倉出場"))
+
+
+def _sync_advice(res):
+    """持倉已建議出場 → 最上方整體建議同步，避免「觀望」與「出場」矛盾"""
+    p = res.get("position") or {}
+    if p.get("action") == "建議出場":
+        res["advice"] = ("短線多方結構破功，建議依計畫執行減碼或出場" if p.get("side") == "long"
+                         else "短線空方結構破功，建議依計畫執行回補")
 
 
 def _now():
@@ -592,6 +663,7 @@ def analyze_swing(code, entry=None, side="long", charts=True, with_chips=True):
            "levels": {"short": clean(lv_s), "long": clean(lv_l), "1wk": clean(lv_w)}, "notes": notes, "base": _api_base(base)}
     if entry:
         res["position"] = exit_check(close, float(entry), side, plan, lv_s, d, "swing")
+        _sync_advice(res)
     if charts:
         res["charts"] = {"short": _short_chart(d, lv_s, plan, f"{title}  短線波段 (日K 近60日)", box=base),
                          "long": _long_chart(d, lv_l, plan_l, f"{title}  中長線波段 (日K 近一年)"),
@@ -735,6 +807,7 @@ def analyze_daytrade(code, entry=None, side="long", charts=True, with_chips=True
            "vwap": round(float(last5["vwap"]), 2)}
     if entry:
         res["position"] = exit_check(c1, float(entry), side, plan, lv5, m5, "daytrade")
+        _sync_advice(res)
     if charts:
         res["charts"] = {"5m": _intraday_chart(it["s5"], lv5, "5m", f"{title}  5分K 當沖 (前一日 + 今日)", plan),
                          "1m": _intraday_chart(it["s1"], lv1, "1m", f"{title}  1分K 當沖 (今日)", plan),

@@ -112,10 +112,38 @@ def get_kline(code: str, tf: str, live=True) -> pd.DataFrame:
         df = yf.Ticker(sym).history(period=period, interval=tf, auto_adjust=False)
         if df.empty:
             raise ValueError(f"查無 {code} 的 {tf} K 線資料")
-        return _normalize(df, is_index)
+        df = _normalize(df, is_index)
+        if tf == "1d" and not is_index:
+            df = _fill_daily(df, resolve(code)["code"])
+        return df
 
     df = cached(f"k:{sym}:{tf}", ttl, load)
-    return _live(df, code, tf, is_index) if live else df
+    df = _live(df, code, tf, is_index) if live else df
+    return df[~df.index.duplicated(keep="last")].sort_index()
+
+
+def _fill_daily(df, code):
+    """Yahoo 日K 偶爾漏掉某幾天 (例：10/12 整根不見) → 均線會和 Yahoo 股市網頁對不上。
+    用 FinMind (證交所原始收盤價，非還原價) 補齊近 60 天缺少的日期、並校正收盤價"""
+    try:
+        fm = finmind("TaiwanStockPrice", data_id=code,
+                     start_date=(dt.date.today() - dt.timedelta(days=90)).isoformat())
+    except Exception:  # noqa: BLE001
+        return df
+    if fm is None or fm.empty:
+        return df
+    df = df.copy()
+    have = {i.date(): i for i in df.index}
+    for _, r in fm.iterrows():
+        if not r["close"]:
+            continue
+        day = pd.Timestamp(r["date"]).date()
+        row = [float(r["open"]), float(r["max"]), float(r["min"]), float(r["close"]), float(r["Trading_Volume"]) / 1000]
+        if day in have:
+            df.loc[have[day], "close"] = row[3]
+        elif day >= df.index[0].date():
+            df.loc[pd.Timestamp(day, tz=TZ)] = row
+    return df.sort_index()
 
 
 def _live(df, code, tf, is_index):

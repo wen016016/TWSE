@@ -157,7 +157,8 @@ def plot(df, title, tf, groups, profile_lv, show_vwap=False, bars=None, mas=None
     ax.bar(x, body, bottom=np.minimum(o, c), color=col, width=0.62, edgecolor=col)
     for m in mas or MA_C:
         if m in d and d[m].notna().any():
-            ax.plot(x, d[m].values, color=MA_C[m], lw=1, label=m.upper())
+            lastv = d[m].dropna().iloc[-1]
+            ax.plot(x, d[m].values, color=MA_C[m], lw=1, label=f"{m.upper()} {lastv:.2f}")
     if show_vwap and "vwap" in d:
         ax.plot(x, d["vwap"].values, color="#111", lw=1.3, ls=":", label="VWAP")
 

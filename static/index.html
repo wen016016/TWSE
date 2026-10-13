@@ -208,7 +208,8 @@ tr.grp{cursor:pointer}tr.grp:hover td{background:var(--bg)}
       <input id="na-url" placeholder="網頁下單登入網址" style="width:320px">
       <button class="b" id="na-add">新增</button>
     </div>
-    <p class="mut" style="font-size:13px">任何有網頁下單的台灣券商都能接，同一家可以加多個帳戶。新增後：開啟瀏覽器 → 手動登入 → 到庫存頁、帳務/交割款頁、下單頁各按一次「擷取」→ 跟 Claude 說「幫我校正 (帳戶名稱)」。<br>
+    <p class="mut" style="font-size:13px">已內建校正的券商 (目前：國票) 新增後直接可用：開啟瀏覽器 → 手動登入 → 同步帳務 / 下單，不用再校正。<br>
+    其他券商 (永豐、元大…)：開啟瀏覽器 → 登入 → 打開券商的「庫存」頁 → 按「擷取」，系統會自動辨識庫存表與可用餘額，之後就能「同步帳務」(不用找 Claude)。自動下單欄位仍需另外校正。<br>
     登入資訊、憑證都保存在你電腦上該帳戶專屬的瀏覽器設定檔，系統不會碰你的密碼。擷取檔存在 %LOCALAPPDATA%\stock-data\snapshots\(帳戶)。</p>
   </div>
 </section>
