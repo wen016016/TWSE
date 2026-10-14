@@ -544,9 +544,22 @@ class WebBroker:
 
         def fn(pw):
             self._connect(pw)
-            pages = [p for p in self.ctx.pages if api["page_match"] in p.url]
+            allp = [p for c in self.browser.contexts for p in c.pages]
+            pages = [p for p in allp if api["page_match"].lower() in p.url.lower()]
             if not pages:
-                raise RuntimeError(f"找不到已登入的 {acc['name']} 分頁，請在 Edge 登入 {acc['name']}")
+                # CDP 連線可能已過期 (Edge 重開過 / 分頁是後來開的) → 重連一次再找
+                try:
+                    self.browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.browser = self.ctx = None
+                self._connect(pw)
+                allp = [p for c in self.browser.contexts for p in c.pages]
+                pages = [p for p in allp if api["page_match"].lower() in p.url.lower()]
+            if not pages:
+                urls = "、".join(p.url[:60] for p in allp) or "沒有任何分頁"
+                raise RuntimeError(f"找不到已登入的 {acc['name']} 分頁 (同步專用 Edge 目前開著：{urls})。"
+                                   f"請在「券商帳戶」頁按「開啟瀏覽器」開出來的那個 Edge 視窗登入，不是平常用的 Edge")
             page = pages[0]
             ps = api["position"]
             j = call(page, ps)
@@ -570,16 +583,23 @@ class WebBroker:
                     cs = api["cost"]
                     cj = call(page, cs)
                     agg = {}
+                    names = {}
                     for lst in cs["lists"]:
                         for row in cj.get(lst) or []:
-                            m_ = re.match(r"\s*(\d{4,6}[A-Z]?)", row.get(cs["code_name"], ""))
+                            m_ = re.match(r"\s*(\d{4,6}[A-Z]?)\s*(.*)", row.get(cs["code_name"], ""))
                             q_, c_ = _num(row.get(cs["qty"], "")), _num(row.get(cs["cost"], ""))
                             if not m_ or not q_ or c_ is None:
                                 continue  # 小計列
+                            names.setdefault(m_.group(1), m_.group(2).strip())
                             a_ = agg.setdefault(m_.group(1), [0.0, 0.0, 0.0])
                             a_[0] += q_
                             a_[1] += c_
                             a_[2] += _num(row.get(cs.get("pnl", ""), "")) or 0
+                    # 今日剛買進、券商「即時庫存」還沒列出的部位 → 用今日新增部位補上
+                    have = {h["code"] for h in holds}
+                    for code_, (q_, c_, u_) in agg.items():
+                        if code_ not in have and q_ > 0:
+                            holds.append({"code": code_, "name": names.get(code_, ""), "qty": int(q_), "type": "今日新增"})
                     for h in holds:
                         if h["code"] in agg and agg[h["code"]][0]:
                             q_, c_, u_ = agg[h["code"]]

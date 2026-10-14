@@ -24,37 +24,71 @@ def atr_mean(d: pd.DataFrame, n=20) -> float:
     return float(tr.tail(n).mean())
 
 
-def _edge(vals, tol, top):
-    """最高 (或最低) 且至少 2 根觸碰的價位；最多略過 2 根單獨突出的 K 棒"""
+MAX_IDLE = 12      # 箱頂 / 箱底連續 12 根 K 棒沒有任何 K 棒觸碰 → 第 13 根起該線過期
+STAIR_WIN = 20     # 階梯墊高時，改以近 20 根內最新密集接觸區定錨
+
+
+def _edge(eh, el, tol, top, max_idle=MAX_IDLE):
+    """由最外緣往現價方向收斂，找第一條「仍有效」的水平線：
+    K 棒區間 [el, eh] 與線 ±tol 有交集才算觸碰；觸碰至少 2 根；最後一次觸碰後不能已連續 max_idle 根沒碰；
+    中間若出現 >= max_idle 根的觸碰斷層，斷層之前視為過期舊階梯 (回傳 start = 斷層後第一根觸碰)；
+    有效區段內最多 2 根單獨突出的 K 棒。回傳 (價位, 觸碰數, start, 是否有斷層)"""
+    vals = eh if top else el
+    n = len(vals)
     order = np.argsort(vals)[::-1] if top else np.argsort(vals)
-    for i in order[:3]:
-        v = vals[i]
-        cnt = int(np.sum(np.abs(vals - v) <= tol))
-        if cnt >= 2:
-            return float(v), cnt
+    seen = set()
+    for i in order:
+        v = float(vals[i])
+        if v in seen:
+            continue
+        seen.add(v)
+        idx = np.flatnonzero((eh >= v - tol) & (el <= v + tol))
+        if len(idx) < 2 or n - 1 - idx[-1] >= max_idle:
+            continue
+        big = np.flatnonzero(np.diff(idx) - 1 >= max_idle)
+        start = int(idx[big[-1] + 1]) if len(big) else 0
+        live = idx[idx >= start]
+        if len(live) < 2:
+            continue
+        out = (vals[start:] > v + tol) if top else (vals[start:] < v - tol)
+        if int(out.sum()) > 2:
+            continue
+        return v, len(live), start, bool(len(big))
     return None
 
 
-def _box_in(seg, atr, max_atr=10):
+def _box_in(seg, atr, max_atr=10, _trimmed=False):
     o, c, h, l = (seg[k].values.astype(float) for k in ("open", "close", "high", "low"))
     btop, bbot = np.maximum(o, c), np.minimum(o, c)
     eh = np.where(h - btop > atr, btop, h)   # 單一長上影線 → 只用實體
     el = np.where(bbot - l > atr, bbot, l)   # 單一長下影線 → 只用實體
     tol = 0.3 * atr
-    top, bot = _edge(eh, tol, True), _edge(el, tol, False)
+    top, bot = _edge(eh, el, tol, True), _edge(eh, el, tol, False)
     if not top or not bot:
-        return None
-    hi, nt = top
-    lo, nb = bot
+        return None   # 箱頂或箱底已連續 12 根無觸碰且無法向內收斂 → 箱型失效 (改走情況 B)
+    hi, nt, st_t, gap_t = top
+    lo, nb, st_b, gap_b = bot
+    half = len(c) // 2
+    first_mean, second_mean = float(c[:half].mean()), float(c[len(c) - half:].mean())
+    if gap_t or gap_b:
+        # 觸碰出現 >= 12 根斷層：剔除過期舊階梯，以斷層後 (或階梯墊高時近 20 根) 的最新密集接觸區重新定錨
+        if _trimmed:
+            return None
+        stair = second_mean - first_mean > atr and len(c) > STAIR_WIN
+        trim = len(c) - STAIR_WIN if stair else max(st_t, st_b)
+        if len(c) - trim < 10:
+            return None
+        b = _box_in(seg.iloc[trim:], atr, max_atr, True)
+        if b:
+            b.update(trim=trim, anchor="stair" if stair else "idle")
+        return b
     width = hi - lo
     if width < 3 * atr or width > max_atr * atr:
         return None
     # 均價差：N 根平分前後兩段的收盤均值，|後半段 - 前半段| 必須 <= 箱寬 45%
-    half = len(c) // 2
-    first_mean, second_mean = float(c[:half].mean()), float(c[len(c) - half:].mean())
     if abs(second_mean - first_mean) > 0.45 * width:
         return None
-    return {"hi": hi, "lo": lo, "touch_top": nt, "touch_bot": nb}
+    return {"hi": hi, "lo": lo, "touch_top": nt, "touch_bot": nb, "trim": 0, "anchor": None}
 
 
 def find_box(d: pd.DataFrame, atr: float, windows=(60, 50, 40, 30, 20), max_excl=10, max_atr=10):
@@ -64,7 +98,8 @@ def find_box(d: pd.DataFrame, atr: float, windows=(60, 50, 40, 30, 20), max_excl
     wins = sorted({w for w in windows if w <= n}, reverse=True)
 
     def pack(b, w, excl, status):
-        s, e = n - excl - w, n - excl
+        s, e = n - excl - w + b.get("trim", 0), n - excl
+        w = e - s
         return dict(b, window=w, status=status, confirmed=excl >= 2 or status == "range", after=excl,
                     start=d.index[s], end=d.index[e - 1], height=b["hi"] - b["lo"])
 
@@ -177,6 +212,10 @@ def make_plan(d, lv, bear=False, atr=None, atr_n=20, windows=(60, 50, 40, 30, 20
             st += " (待隔日收盤確認未拉回)"
         why.append(f"箱型 {round_tick(bx['lo'])} ~ {round_tick(bx['hi'])} (近 {bx['window']} {unit}，箱頂觸碰 {bx['touch_top']} 次、"
                    f"箱底 {bx['touch_bot']} 次，寬 {bx['height'] / atr:.1f} 倍 ATR，ATR {atr:.2f})：{st}")
+        if bx.get("anchor"):
+            why.append(f"箱頂 / 箱底觸碰出現 {MAX_IDLE} {unit}以上斷層，已剔除過期舊階梯，"
+                       + (f"價格重心上移 (階梯墊高)，改以近 {STAIR_WIN} {unit}內最新密集接觸區定錨"
+                          if bx["anchor"] == "stair" else "以斷層後最新接觸區重新定錨"))
         if box:
             why.append("箱型與「整理完成 / 準備啟動」共用同一個" + (f"：{box['source']}" if box.get("source") else ""))
         if fake_note:

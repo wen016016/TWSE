@@ -222,6 +222,18 @@ def api_sectors(force: bool = False):
     return run(sectors.get, force)
 
 
+@app.get("/api/sector_map")
+def api_sector_map():
+    from stock import sectors
+    return run(sectors.code_map)
+
+
+@app.get("/api/sector_group")
+def api_sector_group(name: str):
+    from stock import sectors
+    return run(sectors.group, name)
+
+
 @app.get("/api/auto")
 def api_auto():
     return run(lambda: {"settings": broker.get_settings()["auto"], "status": trader.status, "logs": trader.logs(),
